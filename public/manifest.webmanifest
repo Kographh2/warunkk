@@ -1,0 +1,34 @@
+{
+  "name": "WARUNK ONLINE",
+  "short_name": "WARUNK",
+  "description": "Warung digital realtime untuk order QR meja dan pembayaran di kasir.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7faff",
+  "theme_color": "#1f5eea",
+  "categories": ["food", "shopping", "productivity"],
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Scan Meja",
+      "short_name": "Scan",
+      "url": "/?tab=scan",
+      "icons": [{ "src": "/logo.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Kasir Scan",
+      "short_name": "Kasir",
+      "url": "/kasir",
+      "icons": [{ "src": "/logo.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ]
+}
