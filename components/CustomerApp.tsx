@@ -406,8 +406,8 @@ export function CustomerApp() {
     setMessage('Membaca QR dari foto...');
     try {
       const QrScanner = (await import('qr-scanner')).default;
-      const raw = await QrScanner.scanImage(file, { returnDetailedScanResult: false });
-      await handleQrRaw(String(raw));
+      const raw = await QrScanner.scanImage(file);
+      await handleQrRaw(typeof raw === 'string' ? raw : String((raw as any)?.data || raw));
     } catch {
       setMessage('QR belum terbaca dari foto. Coba foto lebih dekat dan pastikan QR tidak blur.');
     }
