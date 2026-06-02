@@ -21,7 +21,7 @@ export function QRCanvas({ value, title, subtitle }: { value: string; title?: st
   return (
     <div className="qr-box text-center">
       {title && <h5 className="fw-bold mb-1">{title}</h5>}
-      {subtitle && <p className="qr-subtitle text-muted small mb-3">{subtitle}</p>}
+      {subtitle && <p className="text-muted small mb-3">{subtitle}</p>}
       {src ? (
         <img src={src} alt={title || 'QR Code'} className="img-fluid rounded-4 border p-2 bg-white" />
       ) : (

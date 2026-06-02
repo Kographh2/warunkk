@@ -2,142 +2,103 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-type BeforeInstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
-};
-
-declare global {
-  interface Window {
-    WarunkPush?: {
-      registerServiceWorker: () => Promise<ServiceWorkerRegistration | null>;
-      requestPermission: () => Promise<NotificationPermission | 'unsupported'>;
-      notify: (payload: { title: string; body?: string; tag?: string; url?: string }) => Promise<boolean>;
-      playSound: () => Promise<boolean>;
-      getDevice: () => { isIOS: boolean; isAndroid: boolean; isStandalone: boolean; supportsInstallPrompt: boolean };
-    };
-  }
+function isIos() {
+  if (typeof window === 'undefined') return false;
+  return /iphone|ipad|ipod/i.test(window.navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
-function loadPushScript() {
-  return new Promise<void>((resolve) => {
-    if (typeof window === 'undefined') return resolve();
-    if (window.WarunkPush) return resolve();
-    const existing = document.querySelector<HTMLScriptElement>('script[data-warunk-push]');
-    if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true });
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = '/push-notification.js';
-    script.async = true;
-    script.dataset.warunkPush = 'true';
-    script.onload = () => resolve();
-    script.onerror = () => resolve();
-    document.head.appendChild(script);
-  });
+function isStandalone() {
+  if (typeof window === 'undefined') return false;
+  return window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true;
 }
 
 export function PwaNotifier() {
-  const [ready, setReady] = useState(false);
-  const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>('default');
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [dismissed, setDismissed] = useState(false);
-  const [showSteps, setShowSteps] = useState(false);
-  const [device, setDevice] = useState({ isIOS: false, isAndroid: false, isStandalone: false, supportsInstallPrompt: false });
+  const [visible, setVisible] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [iosGuide, setIosGuide] = useState(false);
+  const [notifStatus, setNotifStatus] = useState<NotificationPermission | 'unsupported'>('default');
+
+  const ios = useMemo(() => isIos(), []);
 
   useEffect(() => {
-    const hidden = window.localStorage.getItem('warunk-pwa-prompt-dismissed') === '1';
-    setDismissed(hidden);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+    if ('Notification' in window) setNotifStatus(Notification.permission);
+    else setNotifStatus('unsupported');
 
-    const handlePrompt = (event: Event) => {
+    const dismissed = window.localStorage.getItem('warunk-pwa-dismissed') === '1';
+    if (!dismissed && !isStandalone()) setTimeout(() => setVisible(true), 1400);
+
+    const onBeforeInstall = (event: Event) => {
       event.preventDefault();
-      setDeferredPrompt(event as BeforeInstallPromptEvent);
-      setDevice((current) => ({ ...current, supportsInstallPrompt: true }));
+      setInstallPrompt(event);
+      if (!dismissed) setVisible(true);
     };
-
-    window.addEventListener('beforeinstallprompt', handlePrompt);
-    loadPushScript().then(async () => {
-      await window.WarunkPush?.registerServiceWorker();
-      const nextDevice = window.WarunkPush?.getDevice?.();
-      if (nextDevice) setDevice(nextDevice);
-      if (!('Notification' in window)) setPermission('unsupported');
-      else setPermission(Notification.permission);
-      setReady(true);
-    });
-
-    return () => window.removeEventListener('beforeinstallprompt', handlePrompt);
+    window.addEventListener('beforeinstallprompt', onBeforeInstall as EventListener);
+    return () => window.removeEventListener('beforeinstallprompt', onBeforeInstall as EventListener);
   }, []);
 
-  const shouldShow = useMemo(() => {
-    if (!ready || dismissed) return false;
-    if (device.isStandalone && permission === 'granted') return false;
-    return true;
-  }, [device.isStandalone, dismissed, permission, ready]);
-
-  async function enableNotification() {
-    const result = await window.WarunkPush?.requestPermission?.();
-    setPermission(result || 'unsupported');
-    if (result === 'granted') {
-      await window.WarunkPush?.notify?.({
-        title: 'Notifikasi Warunk aktif',
-        body: 'Kamu akan mendapat info realtime saat status pesanan berubah.',
-        tag: 'warunk-permission-ok',
-        url: '/'
-      });
-    }
-  }
-
   async function installApp() {
-    if (deferredPrompt) {
-      await deferredPrompt.prompt();
-      await deferredPrompt.userChoice.catch(() => null);
-      setDeferredPrompt(null);
+    if (installPrompt) {
+      installPrompt.prompt();
+      await installPrompt.userChoice.catch(() => undefined);
+      setInstallPrompt(null);
+      setVisible(false);
       return;
     }
-    setShowSteps(true);
+    if (ios) {
+      setIosGuide(true);
+      setVisible(true);
+      return;
+    }
+    setIosGuide(true);
   }
 
-  function closePrompt() {
-    window.localStorage.setItem('warunk-pwa-prompt-dismissed', '1');
-    setDismissed(true);
+  async function allowNotif() {
+    if (!('Notification' in window)) {
+      setNotifStatus('unsupported');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotifStatus(permission);
+    if (permission === 'granted') {
+      try {
+        new Notification('WARUNK ONLINE aktif', { body: 'Notifikasi pesanan siap dipakai.', icon: '/logo.svg' });
+      } catch {
+        // ignore notification render errors
+      }
+    }
   }
 
-  if (!shouldShow) return null;
+  function close() {
+    window.localStorage.setItem('warunk-pwa-dismissed', '1');
+    setVisible(false);
+  }
+
+  if (!visible) return null;
 
   return (
-    <div className="pwa-smart-prompt" role="dialog" aria-label="Aktifkan aplikasi warung">
-      <button className="pwa-close" onClick={closePrompt} aria-label="Tutup">×</button>
-      <div className="pwa-icon"><i className="bi bi-bell-fill" /></div>
-      <div className="pwa-content">
-        <strong>Info pesanan realtime</strong>
-        <p>
-          Aktifkan notifikasi dan pasang aplikasi ke Home Screen supaya update pesanan lebih mudah dipantau.
-        </p>
-        {showSteps && (
-          <div className="pwa-steps">
-            {device.isIOS ? (
-              <>
-                <span><b>iPhone/iPad:</b> buka Safari, tekan Share, lalu pilih Add to Home Screen.</span>
-                <span>Setelah dibuka dari Home Screen, tekan Izinkan Notifikasi.</span>
-              </>
-            ) : (
-              <>
-                <span><b>Android/Chrome:</b> tekan menu browser, lalu pilih Install app atau Add to Home screen.</span>
-                <span>Jika popup install muncul, tekan Install.</span>
-              </>
-            )}
-          </div>
-        )}
-        <div className="pwa-actions">
-          {permission !== 'granted' && permission !== 'unsupported' && (
-            <button className="btn btn-pratapa btn-sm rounded-pill" onClick={enableNotification}>Izinkan Notifikasi</button>
-          )}
-          {!device.isStandalone && (
-            <button className="btn btn-light btn-sm rounded-pill fw-bold" onClick={installApp}>Install App</button>
-          )}
+    <div className="pwa-helper-card shadow-lg" role="dialog" aria-label="Install dan notifikasi aplikasi">
+      <button className="pwa-close" onClick={close} aria-label="Tutup">×</button>
+      <div className="d-flex gap-3 align-items-start">
+        <div className="pwa-icon"><i className="bi bi-bell-fill" /></div>
+        <div className="flex-grow-1">
+          <strong className="d-block">Biar pesanan tidak kelewat</strong>
+          <span className="text-muted small">Install WARUNK ONLINE dan aktifkan notifikasi realtime.</span>
         </div>
       </div>
+      <div className="d-flex gap-2 mt-3">
+        <button onClick={allowNotif} className="btn btn-sm btn-warunk rounded-pill flex-fill">
+          {notifStatus === 'granted' ? 'Notif Aktif' : 'Izinkan Notif'}
+        </button>
+        <button onClick={installApp} className="btn btn-sm btn-outline-primary rounded-pill flex-fill">Install</button>
+      </div>
+      {iosGuide && (
+        <div className="ios-guide mt-3">
+          <strong>iPhone/iPad:</strong> buka Safari, tekan tombol <b>Share</b>, lalu pilih <b>Add to Home Screen</b>. Setelah dibuka dari Home Screen, izinkan notifikasi dari popup aplikasi.
+          <br />
+          <strong>Android:</strong> tekan <b>Install</b> atau menu Chrome <b>⋮</b> → <b>Add to Home screen</b>.
+        </div>
+      )}
     </div>
   );
 }

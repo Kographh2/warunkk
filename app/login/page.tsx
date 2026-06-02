@@ -1,165 +1,122 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import { supabase } from '@/lib/supabase';
 
-type AuthMode = 'login' | 'register';
-const STAFF_ROLES = ['owner', 'admin', 'kasir'];
+type Mode = 'login' | 'register';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<AuthMode>('login');
-  const [name, setName] = useState('');
+  const params = useSearchParams();
+  const next = params.get('next') || '/';
+  const [mode, setMode] = useState<Mode>('login');
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-
-  const title = useMemo(() => (mode === 'login' ? 'Masuk Akun' : 'Daftar Akun'), [mode]);
+  const [success, setSuccess] = useState('');
 
   useEffect(() => {
-    const initialMode = new URLSearchParams(window.location.search).get('mode');
-    if (initialMode === 'register') setMode('register');
-
-    supabase.auth.getSession().then(async ({ data }) => {
-      if (data.session?.user.id) {
-        await routeAfterAuth(data.session.user.id);
+    async function checkSession() {
+      const { data } = await supabase.auth.getSession();
+      if (!data.session?.user) {
+        setLoading(false);
         return;
       }
-      setLoading(false);
-    });
+      await routeByProfile(data.session.user.id);
+    }
+    checkSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function routeAfterAuth(userId: string) {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role,is_active')
-      .eq('id', userId)
-      .maybeSingle();
-
-    if (profile?.is_active && STAFF_ROLES.includes(profile.role)) {
-      router.replace('/dashboard');
-      return;
-    }
-
-    router.replace('/');
+  async function routeByProfile(userId: string) {
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', userId).maybeSingle();
+    if (profile && ['owner', 'admin', 'kasir'].includes(profile.role)) router.replace('/dashboard');
+    else router.replace(next.startsWith('/') ? next : '/');
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError('');
-    setMessage('');
-
-    if (mode === 'register' && password !== confirmPassword) {
-      setError('Konfirmasi password belum sama.');
-      return;
-    }
-
+    setSuccess('');
     setSubmitting(true);
 
-    if (mode === 'login') {
-      const { data, error: loginError } = await supabase.auth.signInWithPassword({ email, password });
+    if (mode === 'register') {
+      const { data, error: registerError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { full_name: fullName || email.split('@')[0], role: 'customer' } }
+      });
       setSubmitting(false);
-      if (loginError || !data.user) {
-        setError('Email atau password belum sesuai. Coba cek lagi ya.');
+      if (registerError) {
+        setError(registerError.message);
         return;
       }
-      await routeAfterAuth(data.user.id);
-      return;
-    }
-
-    const { data, error: signupError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: name || email.split('@')[0],
-          role: 'customer'
-        }
+      if (data.session?.user) {
+        await routeByProfile(data.session.user.id);
+        return;
       }
-    });
+      setSuccess('Akun berhasil dibuat. Cek email kamu untuk verifikasi, lalu masuk kembali.');
+      setMode('login');
+      return;
+    }
 
+    const { data, error: loginError } = await supabase.auth.signInWithPassword({ email, password });
     setSubmitting(false);
-    if (signupError) {
-      setError(signupError.message);
+    if (loginError || !data.user) {
+      setError(loginError?.message || 'Email atau password belum sesuai.');
       return;
     }
-
-    if (data.user && data.session) {
-      await routeAfterAuth(data.user.id);
-      return;
-    }
-
-    setMessage('Akun berhasil dibuat. Cek email kalau konfirmasi aktif, lalu masuk memakai akunmu.');
-    setMode('login');
-    setPassword('');
-    setConfirmPassword('');
+    await routeByProfile(data.user.id);
   }
 
-  if (loading) return <LoadingScreen label="Membuka akses..." />;
+  if (loading) return <LoadingScreen label="Membuka akses akun..." />;
 
   return (
-    <main className="customer-page">
-      <div className="customer-shell auth-customer-shell unified-login-shell">
-        <div className="auth-customer-hero text-center">
-          <Link href="/" className="auth-back"><i className="bi bi-arrow-left" /> Home</Link>
-          <div className="loading-logo mx-auto mb-3"><span className="loading-mark">P</span></div>
-          <h1>{title}</h1>
-          <p>Satu halaman masuk untuk semua akun. Customer bisa order tanpa login; login hanya membuat history lebih aman dan tersimpan.</p>
+    <main className="login-page clean-auth-page">
+      <div className="auth-card shadow-lg">
+        <Link href="/" className="auth-back"><i className="bi bi-arrow-left" /> Kembali</Link>
+        <div className="auth-logo mx-auto mb-3">WO</div>
+        <p className="auth-kicker mb-1">WARUNK ONLINE</p>
+        <h1 className="auth-title">{mode === 'login' ? 'Masuk Akun' : 'Daftar Akun'}</h1>
+        <p className="auth-subtitle">
+          Masuk atau daftar dari satu halaman. Sistem akan mengarahkan otomatis sesuai akses akunmu.
+        </p>
+
+        <div className="auth-switch mb-4" role="tablist" aria-label="Pilih mode akun">
+          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError(''); setSuccess(''); }}>Masuk</button>
+          <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setError(''); setSuccess(''); }}>Daftar</button>
         </div>
 
-        <div className="p-3 p-sm-4">
-          <div className="auth-mode-switch mb-3" role="tablist" aria-label="Pilih mode login atau register">
-            <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>Masuk</button>
-            <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>Daftar</button>
-          </div>
-
-          {error && <div className="alert alert-danger rounded-4 small">{error}</div>}
-          {message && <div className="alert alert-success rounded-4 small">{message}</div>}
-
-          <form onSubmit={submit} className="auth-customer-card vstack gap-3">
-            {mode === 'register' && (
-              <div>
-                <label className="form-label fw-bold">Nama</label>
-                <input className="form-control form-control-lg rounded-4" value={name} onChange={(e) => setName(e.target.value)} placeholder="Nama kamu" autoComplete="name" />
-              </div>
-            )}
+        <form onSubmit={submit} className="vstack gap-3">
+          {mode === 'register' && (
             <div>
-              <label className="form-label fw-bold">Email</label>
-              <input type="email" className="form-control form-control-lg rounded-4" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="nama@email.com" autoComplete="email" />
+              <label className="form-label fw-semibold">Nama</label>
+              <input value={fullName} onChange={(e) => setFullName(e.target.value)} className="form-control form-control-lg rounded-4" placeholder="Nama kamu" autoComplete="name" />
             </div>
-            <div>
-              <label className="form-label fw-bold">Password</label>
-              <div className="input-group input-group-lg auth-password-group">
-                <input type={showPassword ? 'text' : 'password'} minLength={6} className="form-control rounded-start-4" value={password} onChange={(e) => setPassword(e.target.value)} required placeholder="Minimal 6 karakter" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
-                <button type="button" className="btn btn-outline-secondary rounded-end-4" onClick={() => setShowPassword((value) => !value)} aria-label="Tampilkan password">
-                  <i className={`bi ${showPassword ? 'bi-eye-slash' : 'bi-eye'}`} />
-                </button>
-              </div>
-            </div>
-            {mode === 'register' && (
-              <div>
-                <label className="form-label fw-bold">Konfirmasi Password</label>
-                <input type={showPassword ? 'text' : 'password'} minLength={6} className="form-control form-control-lg rounded-4" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required placeholder="Ulangi password" autoComplete="new-password" />
-              </div>
-            )}
-            <button disabled={submitting} className="btn btn-warunk btn-lg rounded-pill">
-              {submitting ? 'Memproses...' : mode === 'login' ? 'Masuk' : 'Daftar Sekarang'}
-            </button>
-          </form>
-
-          <div className="auth-safe-note mt-3">
-            <i className="bi bi-shield-lock-fill" />
-            <span>Order tetap bisa tanpa login. Login dipakai agar history tidak hilang saat ganti perangkat.</span>
+          )}
+          <div>
+            <label className="form-label fw-semibold">Email</label>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" className="form-control form-control-lg rounded-4" placeholder="nama@email.com" autoComplete="email" required />
           </div>
+          <div>
+            <label className="form-label fw-semibold">Password</label>
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" className="form-control form-control-lg rounded-4" placeholder="Minimal 6 karakter" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} required minLength={6} />
+          </div>
+          {error && <div className="alert alert-danger rounded-4 py-2 small mb-0">{error}</div>}
+          {success && <div className="alert alert-success rounded-4 py-2 small mb-0">{success}</div>}
+          <button disabled={submitting} className="btn btn-warunk btn-lg rounded-pill fw-bold mt-2">
+            {submitting ? 'Memproses...' : mode === 'login' ? 'Masuk' : 'Daftar'}
+          </button>
+        </form>
+
+        <div className="auth-footnote mt-4">
+          Customer bisa tetap pesan tanpa login. Login berguna agar history pesanan tersimpan dan bisa dibuka lagi dari perangkat lain.
         </div>
       </div>
     </main>

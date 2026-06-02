@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
@@ -19,39 +18,6 @@ const links: { href: string; label: string; icon: string; roles: Role[] }[] = [
 export function DashboardShell({ profile, children }: { profile: Profile; children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [posAlert, setPosAlert] = useState('');
-  const alertTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    const channel = supabase
-      .channel(`pos-shell-alerts-${profile.id}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, (payload) => {
-        const order = payload.new as any;
-        const text = `Order baru meja ${order.table_number || '-'} • ${new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(Number(order.total_amount || 0))}`;
-        setPosAlert(text);
-        if (alertTimerRef.current) window.clearTimeout(alertTimerRef.current);
-        alertTimerRef.current = window.setTimeout(() => setPosAlert(''), 6200);
-        (window as any).WarunkPush?.notify?.({
-          title: 'Order baru masuk',
-          body: text,
-          tag: `warunk-new-order-${order.id}`,
-          url: '/dashboard/orders'
-        });
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
-        const order = payload.new as any;
-        if (order.status !== 'paid' && order.status !== 'ready') return;
-        const text = `Status meja ${order.table_number || '-'} berubah menjadi ${order.status}.`;
-        setPosAlert(text);
-        if (alertTimerRef.current) window.clearTimeout(alertTimerRef.current);
-        alertTimerRef.current = window.setTimeout(() => setPosAlert(''), 5200);
-      })
-      .subscribe();
-    return () => {
-      supabase.removeChannel(channel);
-      if (alertTimerRef.current) window.clearTimeout(alertTimerRef.current);
-    };
-  }, [profile.id]);
 
   async function logout() {
     await supabase.auth.signOut();
@@ -92,12 +58,6 @@ export function DashboardShell({ profile, children }: { profile: Profile; childr
       </aside>
 
       <main className="pos-main">
-        {posAlert && (
-          <div className="pos-realtime-alert">
-            <i className="bi bi-bell-fill" />
-            <div><strong>Realtime POS</strong><span>{posAlert}</span></div>
-          </div>
-        )}
         {children}
       </main>
     </div>

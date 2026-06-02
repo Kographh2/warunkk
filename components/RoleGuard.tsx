@@ -30,7 +30,7 @@ export function RoleGuard({
         .eq('id', auth.user.id)
         .single();
       if (profileError || !data) {
-        setError('Sesi belum memiliki akses yang diperlukan.');
+        setError(profileError?.message || 'Profil tidak ditemukan.');
       } else {
         setProfile(data as Profile);
       }
@@ -47,8 +47,8 @@ export function RoleGuard({
         <div className="soft-card p-5 text-center mx-auto" style={{ maxWidth: 520 }}>
           <i className="bi bi-lock display-4 text-warunk" />
           <h1 className="fw-bold mt-3">Login diperlukan</h1>
-          <p className="text-muted">{error || 'Masuk memakai akun yang sudah terdaftar untuk membuka halaman ini.'}</p>
-          <Link href="/login" className="btn btn-warunk rounded-pill px-4">Masuk</Link>
+          <p className="text-muted">{error || 'Masuk sebagai owner, admin, atau kasir untuk membuka dashboard.'}</p>
+          <Link href="/login" className="btn btn-warunk rounded-pill px-4">Login Staff</Link>
         </div>
       </main>
     );
@@ -58,7 +58,7 @@ export function RoleGuard({
     return (
       <main className="container py-5">
         <div className="alert alert-danger rounded-4">
-          Akses akun ini belum tersedia untuk halaman yang diminta.
+          Akun <strong>{profile.full_name}</strong> tidak memiliki akses ke halaman ini.
         </div>
       </main>
     );

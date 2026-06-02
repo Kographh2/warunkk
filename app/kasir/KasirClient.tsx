@@ -33,15 +33,15 @@ function normalizeCode(raw: string) {
 function KasirScanner({ profile }: { profile: Profile }) {
   const params = useSearchParams();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const scannerRef = useRef<any>(null);
-  const scannerStartingRef = useRef(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const qrScannerRef = useRef<any>(null);
   const [code, setCode] = useState(params.get('code') || '');
   const [message, setMessage] = useState('');
   const [found, setFound] = useState<OrderWithItems | null>(null);
   const [unpaid, setUnpaid] = useState<OrderWithItems[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [scanError, setScanError] = useState('');
   const [busy, setBusy] = useState(false);
+  const lastUnpaidCount = useRef(0);
 
   async function loadUnpaid() {
     const { data } = await supabase
@@ -50,7 +50,15 @@ function KasirScanner({ profile }: { profile: Profile }) {
       .eq('status', 'waiting_payment')
       .order('created_at', { ascending: false })
       .limit(20);
-    setUnpaid((data || []) as OrderWithItems[]);
+    const next = (data || []) as OrderWithItems[];
+    if (lastUnpaidCount.current && next.length > lastUnpaidCount.current) {
+      try { new Audio('/sound.mp3').play().catch(() => undefined); } catch {}
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try { new Notification('Order baru masuk', { body: 'Ada pesanan menunggu pembayaran di kasir.', icon: '/logo.svg' }); } catch {}
+      }
+    }
+    lastUnpaidCount.current = next.length;
+    setUnpaid(next);
   }
 
   useEffect(() => {
@@ -59,8 +67,7 @@ function KasirScanner({ profile }: { profile: Profile }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, loadUnpaid)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, loadUnpaid)
       .subscribe();
-    const timer = window.setTimeout(() => startCamera(), 350);
-    return () => { window.clearTimeout(timer); supabase.removeChannel(channel); stopCamera(); };
+    return () => { supabase.removeChannel(channel); stopCamera(); };
   }, []);
 
   useEffect(() => {
@@ -111,73 +118,65 @@ function KasirScanner({ profile }: { profile: Profile }) {
     }
   }
 
-  async function scanImageFile(file?: File | null) {
-    if (!file) return;
-    setMessage('Membaca QR dari gambar customer...');
-    setScanError('');
-    try {
-      const { default: QrScanner } = await import('qr-scanner');
-      const result: any = await QrScanner.scanImage(file, { returnDetailedScanResult: true });
-      const value = typeof result === 'string' ? result : result?.data || '';
-      setCode(normalizeCode(value));
-      await findOrder(value);
-    } catch {
-      setScanError('QR pada gambar belum terbaca. Coba foto ulang lebih dekat dan terang, atau masukkan kode manual.');
-      setMessage('');
-    }
+  async function handleRawQr(raw: string) {
+    stopCamera();
+    setCode(normalizeCode(raw));
+    await findOrder(raw);
   }
 
   async function startCamera() {
-    if (scannerStartingRef.current || scanning) return;
     setMessage('');
-    setScanError('');
-    if (!videoRef.current) return;
+    if (scanning) return;
     if (!navigator.mediaDevices?.getUserMedia) {
-      setScanError('Kamera belum bisa dibuka di perangkat ini. Masukkan kode manual dari QR customer.');
+      setMessage('Kamera tidak tersedia di browser ini. Gunakan HTTPS/localhost atau pakai tombol Foto QR / input kode manual.');
       return;
     }
-
-    scannerStartingRef.current = true;
+    if (!videoRef.current) return;
     try {
-      const { default: QrScanner } = await import('qr-scanner');
-      const hasCamera = await QrScanner.hasCamera();
-      if (!hasCamera) {
-        setScanError('Kamera tidak ditemukan. Masukkan kode manual dari QR customer.');
-        return;
-      }
-      scannerRef.current?.destroy?.();
+      const QrScanner = (await import('qr-scanner')).default;
+      stopCamera();
       const scanner = new QrScanner(
         videoRef.current,
-        async (result: any) => {
-          const value = typeof result === 'string' ? result : result?.data || '';
-          if (!value) return;
-          stopCamera();
-          setCode(normalizeCode(value));
-          await findOrder(value);
+        (result: any) => {
+          const raw = typeof result === 'string' ? result : result?.data;
+          if (raw) handleRawQr(raw);
         },
         {
           preferredCamera: 'environment',
+          returnDetailedScanResult: true,
+          maxScansPerSecond: 8,
           highlightScanRegion: true,
-          highlightCodeOutline: true,
-          maxScansPerSecond: 12,
-          returnDetailedScanResult: true
+          highlightCodeOutline: true
         }
       );
-      scannerRef.current = scanner;
+      qrScannerRef.current = scanner;
       await scanner.start();
       setScanning(true);
+    } catch (error: any) {
+      stopCamera();
+      const text = String(error?.message || error || '').toLowerCase();
+      if (text.includes('permission')) setMessage('Izin kamera belum diberikan. Klik Allow/Izinkan pada popup browser.');
+      else setMessage('Kamera belum bisa dibuka. Pakai HTTPS/localhost atau gunakan Foto QR / input manual.');
+    }
+  }
+
+  async function scanImageFile(file?: File | null) {
+    if (!file) return;
+    setMessage('Membaca QR dari foto...');
+    try {
+      const QrScanner = (await import('qr-scanner')).default;
+      const raw = await QrScanner.scanImage(file, { returnDetailedScanResult: false });
+      await handleRawQr(String(raw));
     } catch {
-      setScanError('Kamera belum bisa aktif. Izinkan akses kamera dan jalankan lewat HTTPS atau localhost.');
-      setScanning(false);
-    } finally {
-      scannerStartingRef.current = false;
+      setMessage('QR belum terbaca dari foto. Pastikan foto QR jelas dan tidak blur.');
     }
   }
 
   function stopCamera() {
-    scannerRef.current?.stop?.();
-    scannerRef.current?.destroy?.();
-    scannerRef.current = null;
+    try { qrScannerRef.current?.stop(); qrScannerRef.current?.destroy(); } catch {}
+    qrScannerRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
     setScanning(false);
   }
 
@@ -186,43 +185,29 @@ function KasirScanner({ profile }: { profile: Profile }) {
       <div className="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
         <div>
           <h1 className="fw-bold mb-1">Kasir Scan Payment</h1>
-          <p className="text-muted mb-0">Customer bayar langsung di kasir. Setelah itu kasir scan QR dari layar customer untuk verifikasi pesanan secara realtime.</p>
+          <p className="text-muted mb-0">Customer hanya bayar di kasir dengan menunjukan QR. Kasir scan untuk membuat order sukses/paid.</p>
         </div>
       </div>
 
       <div className="row g-4">
         <div className="col-xl-5">
           <div className="soft-card p-4 h-100">
-            <div className="d-flex justify-content-between align-items-start gap-3 mb-3">
-              <div>
-                <h4 className="fw-bold mb-1"><i className="bi bi-qr-code-scan me-2 text-warunk" />Scan QR Pembayaran</h4>
-                <p className="text-muted small mb-0">Tidak perlu alat scanner. Kamera laptop/HP kasir bisa langsung membaca QR customer.</p>
-              </div>
-              <span className={`badge rounded-pill ${scanning ? 'text-bg-success' : 'text-bg-light border'}`}>{scanning ? 'Kamera aktif' : 'Siap scan'}</span>
+            <h4 className="fw-bold mb-3"><i className="bi bi-qr-code-scan me-2 text-warunk" />Scan QR</h4>
+            <div className="ratio ratio-1x1 bg-dark rounded-5 overflow-hidden mb-3 position-relative">
+              <video ref={videoRef} className="w-100 h-100 object-fit-cover" autoPlay playsInline muted />
+              {!scanning && <div className="position-absolute top-50 start-50 translate-middle text-white text-center"><i className="bi bi-camera display-4" /><div>Kamera kasir siap</div><small>Scan QR pembayaran customer</small></div>}
+              {scanning && <div className="scan-frame position-absolute top-50 start-50 translate-middle"><span /></div>}
             </div>
-            <div className="cashier-scan-preview mb-3">
-              <video ref={videoRef} className="scan-video-feed w-100 h-100 object-fit-cover" autoPlay playsInline muted />
-              {!scanning && <div className="cashier-scan-empty"><i className="bi bi-camera-video" /><strong>Arahkan QR customer ke kamera</strong><span>Bisa pakai kamera laptop/HP, upload foto QR, atau input kode manual.</span></div>}
-              {scanning && <div className="scan-frame position-absolute top-50 start-50 translate-middle"><span className="scan-line" /></div>}
-            </div>
-            <div className="cashier-scan-actions mb-3">
-              <button onClick={startCamera} className="btn btn-warunk rounded-pill"><i className="bi bi-camera-video me-1" />{scanning ? 'Scanning...' : 'Nyalakan Kamera'}</button>
-              <label className="btn btn-light border rounded-pill fw-bold mb-0">
-                <i className="bi bi-image me-1" />Foto/Upload QR
-                <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => scanImageFile(e.target.files?.[0])} />
-              </label>
+            <div className="d-flex gap-2 mb-3">
+              <button onClick={startCamera} className="btn btn-warunk rounded-pill flex-fill"><i className="bi bi-camera-video me-1" />Mulai Scan</button>
+              <label className="btn btn-outline-primary rounded-pill mb-0"><i className="bi bi-image me-1" />Foto QR<input type="file" accept="image/*" capture="environment" hidden onChange={(e) => scanImageFile(e.target.files?.[0])} /></label>
               <button onClick={stopCamera} className="btn btn-outline-dark rounded-pill">Stop</button>
             </div>
-            <div className="cashier-scan-help mb-3">
-              <i className="bi bi-info-circle" />
-              <span>Kalau kamera PC tidak ada, pilih foto/upload QR atau ketik kode pembayaran di bawah.</span>
-            </div>
-            <label className="form-label fw-semibold">Kode / URL QR manual</label>
+            <label className="form-label fw-semibold">Atau masukkan kode / URL QR manual</label>
             <div className="input-group input-group-lg">
               <input value={code} onChange={(e) => setCode(e.target.value)} className="form-control rounded-start-pill" placeholder="WRK-..." />
               <button onClick={() => findOrder()} className="btn btn-dark rounded-end-pill">Cari</button>
             </div>
-            {scanError && <div className="alert alert-warning rounded-4 mt-3 mb-0">{scanError}</div>}
             {message && <div className="alert alert-info rounded-4 mt-3 mb-0">{message}</div>}
           </div>
         </div>

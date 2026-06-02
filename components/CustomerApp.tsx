@@ -9,7 +9,7 @@ import { QRCanvas } from '@/components/QRCanvas';
 import { StatusTimeline } from '@/components/StatusTimeline';
 import { appUrl, compactDate, orderStatusBadge, orderStatusLabel, paymentCode, rupiah } from '@/lib/format';
 import { supabase } from '@/lib/supabase';
-import { CartItem, Category, MenuItem, Order, OrderItem, Profile, StoreSettings, TableRow } from '@/lib/types';
+import { CartItem, Category, MenuItem, Order, OrderItem, StoreSettings, TableRow } from '@/lib/types';
 
 type BottomTab = 'home' | 'menu' | 'scan' | 'history' | 'profile';
 type OrderWithItems = Order & { order_items?: OrderItem[] };
@@ -58,8 +58,8 @@ export function CustomerApp() {
   const params = useSearchParams();
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const scannerRef = useRef<any>(null);
-  const scannerStartingRef = useRef(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const qrScannerRef = useRef<any>(null);
 
   const slug = params.get('slug') || '';
   const tableNumber = params.get('tableNumber') || '';
@@ -81,13 +81,8 @@ export function CustomerApp() {
   const [customerName, setCustomerName] = useState('USER');
   const [clock, setClock] = useState('00.00 AM');
   const [scannerOn, setScannerOn] = useState(false);
-  const [scannerError, setScannerError] = useState('');
   const [hasSession, setHasSession] = useState(false);
-  const [customerProfile, setCustomerProfile] = useState<Profile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [realtimeAlert, setRealtimeAlert] = useState('');
-  const alertTimerRef = useRef<number | null>(null);
-  const lastOrderStatusRef = useRef<string>('');
 
   const cartCount = cart.reduce((sum, item) => sum + item.qty, 0);
   const subtotal = cart.reduce((sum, item) => sum + Number(item.menu_item.price) * item.qty, 0);
@@ -107,11 +102,6 @@ export function CustomerApp() {
   }, [activeCategory, menu, searchQuery]);
 
   useEffect(() => {
-    const tab = params.get('tab') as BottomTab | null;
-    if (tab && ['home', 'menu', 'scan', 'history', 'profile'].includes(tab)) setActiveTab(tab);
-  }, [params]);
-
-  useEffect(() => {
     const timer = setInterval(() => {
       setClock(new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date()).replace(':', '.'));
     }, 1000);
@@ -120,16 +110,23 @@ export function CustomerApp() {
   }, []);
 
   useEffect(() => {
-    lastOrderStatusRef.current = order?.status || '';
-  }, [order?.status]);
-
-  useEffect(() => {
-    refreshCustomerIdentity();
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      refreshCustomerIdentity(session?.user.id);
+    const savedName = window.localStorage.getItem('warunk-customer-name');
+    if (savedName) setCustomerName(savedName);
+    supabase.auth.getSession().then(async ({ data }) => {
+      setHasSession(Boolean(data.session));
+      if (data.session?.user?.id) {
+        const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', data.session.user.id).maybeSingle();
+        if (profile?.full_name) setCustomerName(profile.full_name);
+      }
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setHasSession(Boolean(session));
+      if (session?.user?.id) {
+        const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', session.user.id).maybeSingle();
+        if (profile?.full_name) setCustomerName(profile.full_name);
+      }
     });
     return () => listener.subscription.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -201,11 +198,7 @@ export function CustomerApp() {
     const channel = supabase
       .channel(`customer-order-${order.id}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${order.id}` }, (payload) => {
-        const nextOrder = payload.new as Order;
-        const previousStatus = lastOrderStatusRef.current;
-        setOrder(nextOrder);
-        if (previousStatus && previousStatus !== nextOrder.status) showOrderAlert(nextOrder);
-        lastOrderStatusRef.current = nextOrder.status;
+        setOrder(payload.new as Order);
         loadHistory();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items', filter: `order_id=eq.${order.id}` }, () => {
@@ -217,60 +210,14 @@ export function CustomerApp() {
   }, [order?.id]);
 
   useEffect(() => {
-    if (activeTab === 'scan' && !order) {
-      const timer = window.setTimeout(() => {
-        startScanner();
-      }, 350);
-      return () => window.clearTimeout(timer);
+    if (activeTab === 'scan' && !order && !scannerOn) {
+      startScanner();
     }
     if (activeTab !== 'scan') stopScanner();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, order?.id]);
 
-  useEffect(() => () => {
-    stopScanner();
-    if (alertTimerRef.current) window.clearTimeout(alertTimerRef.current);
-  }, []);
-
-  async function refreshCustomerIdentity(userId?: string) {
-    const savedName = window.localStorage.getItem('warunk-customer-name');
-    const { data } = userId ? { data: { session: { user: { id: userId, email: undefined } } } as any } : await supabase.auth.getSession();
-    const authUserId = userId || data.session?.user.id;
-
-    setHasSession(Boolean(authUserId));
-    if (!authUserId) {
-      setCustomerProfile(null);
-      setCustomerName(savedName || 'USER');
-      return;
-    }
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', authUserId)
-      .maybeSingle();
-
-    const typedProfile = (profile || null) as Profile | null;
-    setCustomerProfile(typedProfile);
-    const profileName = typedProfile?.full_name?.trim();
-    const nextName = profileName || savedName || 'USER';
-    setCustomerName(nextName);
-    window.localStorage.setItem('warunk-customer-name', nextName);
-  }
-
-  async function showOrderAlert(nextOrder: Order) {
-    const label = orderStatusLabel(nextOrder.status);
-    const text = `Status pesanan kamu: ${label}`;
-    setRealtimeAlert(text);
-    if (alertTimerRef.current) window.clearTimeout(alertTimerRef.current);
-    alertTimerRef.current = window.setTimeout(() => setRealtimeAlert(''), 5200);
-    await (window as any).WarunkPush?.notify?.({
-      title: 'Update pesanan warung',
-      body: `Meja ${nextOrder.table_number} sekarang ${label}.`,
-      tag: `warunk-order-${nextOrder.id}-${nextOrder.status}`,
-      url: '/'
-    });
-  }
+  useEffect(() => () => stopScanner(), []);
 
   async function loadHistory() {
     const { data: auth } = await supabase.auth.getSession();
@@ -299,16 +246,9 @@ export function CustomerApp() {
     setHistoryOrders((data || []) as OrderWithItems[]);
   }
 
-  async function saveName(value: string) {
-    const nextName = value || 'USER';
-    setCustomerName(nextName);
-    window.localStorage.setItem('warunk-customer-name', nextName);
-
-    const { data } = await supabase.auth.getSession();
-    if (data.session?.user.id && nextName.trim().length >= 2) {
-      await supabase.from('profiles').update({ full_name: nextName.trim() }).eq('id', data.session.user.id);
-      setCustomerProfile((current) => current ? { ...current, full_name: nextName.trim() } : current);
-    }
+  function saveName(value: string) {
+    setCustomerName(value);
+    window.localStorage.setItem('warunk-customer-name', value || 'USER');
   }
 
   async function logoutCustomer() {
@@ -414,110 +354,98 @@ export function CustomerApp() {
     setActiveTab('home');
   }
 
-  function handleScannedTableQr(raw: string) {
+  async function handleQrRaw(raw: string) {
     const found = parseQrValue(raw);
-    stopScanner();
     if (found.slug || found.tableNumber) {
+      stopScanner();
       const url = `/${found.slug ? `?slug=${encodeURIComponent(found.slug)}` : `?tableNumber=${encodeURIComponent(found.tableNumber)}`}${found.slug && found.tableNumber ? `&tableNumber=${encodeURIComponent(found.tableNumber)}` : ''}`;
       router.replace(url);
       return;
     }
-    setMessage('QR tidak berisi nomor meja yang valid.');
+    setMessage('QR belum sesuai. Pastikan yang discan adalah QR meja dari warung.');
   }
 
   async function startScanner() {
-    if (scannerStartingRef.current || scannerOn || order) return;
     setMessage('');
-    setScannerError('');
-
-    if (!videoRef.current) return;
+    if (scannerOn || order) return;
     if (!navigator.mediaDevices?.getUserMedia) {
-      setScannerError('Kamera belum bisa dibuka di perangkat ini. Kamu tetap bisa scan QR meja dari aplikasi kamera HP untuk membuka link order.');
+      setMessage('Kamera tidak bisa dibuka di browser ini. Coba buka dari HTTPS/localhost atau pakai tombol Ambil Foto QR.');
       return;
     }
-
-    scannerStartingRef.current = true;
+    if (!videoRef.current) return;
     try {
-      const { default: QrScanner } = await import('qr-scanner');
-      const hasCamera = await QrScanner.hasCamera();
-      if (!hasCamera) {
-        setScannerError('Kamera tidak ditemukan. Buka link QR meja dari kamera HP atau cek izin kamera perangkat.');
-        return;
-      }
-
-      scannerRef.current?.destroy?.();
+      const QrScanner = (await import('qr-scanner')).default;
+      stopScanner();
       const scanner = new QrScanner(
         videoRef.current,
-        (result: any) => handleScannedTableQr(typeof result === 'string' ? result : result?.data || ''),
+        (result: any) => {
+          const raw = typeof result === 'string' ? result : result?.data;
+          if (raw) handleQrRaw(raw);
+        },
         {
           preferredCamera: 'environment',
+          returnDetailedScanResult: true,
+          maxScansPerSecond: 8,
           highlightScanRegion: true,
-          highlightCodeOutline: true,
-          maxScansPerSecond: 12,
-          returnDetailedScanResult: true
+          highlightCodeOutline: true
         }
       );
-      scannerRef.current = scanner;
+      qrScannerRef.current = scanner;
       await scanner.start();
       setScannerOn(true);
-    } catch {
-      setScannerError('Kamera belum bisa aktif. Izinkan akses kamera dan jalankan lewat HTTPS atau localhost.');
-      setScannerOn(false);
-    } finally {
-      scannerStartingRef.current = false;
+    } catch (error: any) {
+      stopScanner();
+      const text = String(error?.message || error || '');
+      if (text.toLowerCase().includes('permission')) setMessage('Izin kamera belum diberikan. Tekan Allow/Izinkan di popup browser.');
+      else setMessage('Kamera belum bisa dibuka. Pastikan halaman memakai HTTPS/localhost atau gunakan Ambil Foto QR.');
     }
   }
 
-  async function scanQrImage(file?: File | null) {
+  async function scanImageFile(file?: File | null) {
     if (!file) return;
-    setMessage('Membaca QR dari gambar...');
-    setScannerError('');
+    setMessage('Membaca QR dari foto...');
     try {
-      const { default: QrScanner } = await import('qr-scanner');
-      const result: any = await QrScanner.scanImage(file, { returnDetailedScanResult: true });
-      handleScannedTableQr(typeof result === 'string' ? result : result?.data || '');
+      const QrScanner = (await import('qr-scanner')).default;
+      const raw = await QrScanner.scanImage(file, { returnDetailedScanResult: false });
+      await handleQrRaw(String(raw));
     } catch {
-      setScannerError('QR di gambar belum terbaca. Coba foto QR lebih terang dan tidak blur.');
-      setMessage('');
+      setMessage('QR belum terbaca dari foto. Coba foto lebih dekat dan pastikan QR tidak blur.');
     }
   }
 
   function stopScanner() {
-    scannerRef.current?.stop?.();
-    scannerRef.current?.destroy?.();
-    scannerRef.current = null;
+    try { qrScannerRef.current?.stop(); qrScannerRef.current?.destroy(); } catch {}
+    qrScannerRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
     setScannerOn(false);
   }
 
   if (loading) return <LoadingScreen label="Membuka home warung digital..." />;
 
-  const showHero = activeTab === 'home';
-
   return (
     <main className="customer-page">
       <div className="customer-shell">
-        {showHero && <header className="pratapa-hero">
-          <div className="d-flex align-items-start justify-content-between gap-3">
-            <div>
-              <div className="hero-mini mb-3">Halo, {customerName || 'USER'}</div>
-              <div className="hero-title">Selamat datang di<br />{settings.name}</div>
+        {(activeTab === 'home' || activeTab === 'menu') && (
+          <header className="pratapa-hero">
+            <div className="d-flex align-items-start justify-content-between gap-3">
+              <div>
+                <div className="hero-mini mb-3">HI, {customerName || 'USER'}</div>
+                <div className="hero-title">WELCOME TO,<br />{settings.name}</div>
+              </div>
+              <div className="time-pill">{clock}</div>
             </div>
-            <div className="time-pill">{clock}</div>
-          </div>
-          <p className="hero-copy mb-2">{settings.tagline}</p>
-          <p className="hero-copy hero-copy-strong mb-0">Scan QR meja, pilih jajanan, bayar di kasir.</p>
-          {table && <div className="table-chip"><i className="bi bi-check-circle-fill me-1" /> Meja {table.table_number}</div>}
-        </header>}
-
-        {message && <div className="alert alert-info customer-alert rounded-4 py-2 small mb-3">{message}</div>}
-        {realtimeAlert && (
-          <div className="customer-realtime-toast">
-            <span><i className="bi bi-bell-fill" /></span>
-            <div><strong>Realtime update</strong><small>{realtimeAlert}</small></div>
-          </div>
+            <p className="hero-copy mb-2">{settings.tagline}</p>
+            <p className="hero-copy hero-copy-strong mb-0">Pilih jajanan favoritmu, bayar di kasir, lalu tinggal tunggu dipanggil.</p>
+            <div className="table-chip table-chip-soft">
+              {table ? <><i className="bi bi-check-circle-fill me-1" /> Meja {table.table_number}</> : <><i className="bi bi-qr-code-scan me-1" /> Scan QR meja dulu</>}
+            </div>
+          </header>
         )}
 
-        <section className={`customer-content ${showHero ? '' : 'customer-content-plain'}`}>
+        {message && <div className="alert alert-info customer-alert rounded-4 py-2 small mb-3">{message}</div>}
+
+        <section className="customer-content">
           {activeTab === 'home' && (
             <HomeTab
               featured={featuredMenu}
@@ -548,10 +476,9 @@ export function CustomerApp() {
               table={table}
               videoRef={videoRef}
               scannerOn={scannerOn}
-              scannerError={scannerError}
               startScanner={startScanner}
               stopScanner={stopScanner}
-              scanQrImage={scanQrImage}
+              scanImageFile={scanImageFile}
               clearActiveOrder={clearActiveOrder}
             />
           )}
@@ -561,7 +488,7 @@ export function CustomerApp() {
           )}
 
           {activeTab === 'profile' && (
-            <ProfileTab name={customerName} saveName={saveName} table={table} hasSession={hasSession} profile={customerProfile} logoutCustomer={logoutCustomer} />
+            <ProfileTab name={customerName} saveName={saveName} table={table} hasSession={hasSession} logoutCustomer={logoutCustomer} />
           )}
         </section>
 
@@ -623,7 +550,6 @@ function HomeTab({ featured, bestSeller, addToCart, onSeeMenu, onScan, table }: 
 function MenuTab({ categories, filteredMenu, activeCategory, setActiveCategory, addToCart, searchQuery, setSearchQuery }: { categories: Category[]; filteredMenu: MenuItem[]; activeCategory: string; setActiveCategory: (id: string) => void; addToCart: (item: MenuItem) => void; searchQuery: string; setSearchQuery: (value: string) => void }) {
   return (
     <div className="pb-5">
-      <PageTop icon="bi-journal-richtext" title="Menu Warung" subtitle="Pilih jajanan favoritmu, nanti bayar di kasir." />
       <div className="menu-search-box mb-3">
         <i className="bi bi-search" />
         <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Cari minuman, makanan, snack..." />
@@ -648,10 +574,10 @@ function GuestOrderNote({ onScan, table }: { onScan: () => void; table: TableRow
     <div className="guest-order-note mb-3">
       <div className="guest-note-icon"><i className="bi bi-lightning-charge-fill" /></div>
       <div className="flex-grow-1">
-        <strong>Pesan dari meja kamu</strong>
-        <p className="mb-0">Scan QR meja, pilih menu yang kamu mau, lalu tunjukkan QR pembayaran ke kasir.</p>
+        <strong>Pesan langsung, tanpa ribet</strong>
+        <p className="mb-0">Bisa pesan tanpa login. Login hanya diperlukan kalau kamu ingin riwayat jajan tersimpan permanen.</p>
       </div>
-      <button onClick={onScan} className="btn btn-sm btn-light rounded-pill fw-bold">{table ? `Meja ${table.table_number}` : 'Scan Meja'}</button>
+      <button onClick={onScan} className="btn btn-sm btn-light rounded-pill fw-bold">{table ? `Meja ${table.table_number}` : 'Scan QR'}</button>
     </div>
   );
 }
@@ -677,16 +603,15 @@ function ProductCard({ item, addToCart }: { item: MenuItem; addToCart: (item: Me
   );
 }
 
-function ScanTab({ order, orderItems, table, videoRef, scannerOn, scannerError, startScanner, stopScanner, scanQrImage, clearActiveOrder }: {
+function ScanTab({ order, orderItems, table, videoRef, scannerOn, startScanner, stopScanner, scanImageFile, clearActiveOrder }: {
   order: Order | null;
   orderItems: OrderItem[];
   table: TableRow | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   scannerOn: boolean;
-  scannerError: string;
   startScanner: () => void;
   stopScanner: () => void;
-  scanQrImage: (file?: File | null) => void;
+  scanImageFile: (file?: File | null) => void;
   clearActiveOrder: () => void;
 }) {
   if (order) {
@@ -697,8 +622,8 @@ function ScanTab({ order, orderItems, table, videoRef, scannerOn, scannerError, 
           <button className="btn btn-sm btn-light rounded-circle payment-close" onClick={clearActiveOrder}>×</button>
           <span className={`badge rounded-pill ${orderStatusBadge(order.status)} mb-2`}>{orderStatusLabel(order.status)}</span>
           <h2 className="fw-bold mb-1">Tunjukkan QR ke Kasir</h2>
-          <p className="text-muted small mb-3">Setelah bayar di kasir, tunjukkan QR ini supaya pesanan diverifikasi.</p>
-          <QRCanvas value={qrValue} title="" subtitle="QR pembayaran untuk kasir" />
+          <p className="text-muted small mb-3">Kasir scan QR ini setelah kamu bayar tunai/non-tunai di kasir.</p>
+          <QRCanvas value={qrValue} title="" subtitle="QR PEMBAYARAN UNTUK KASIR" />
           <div className="fw-bold fs-5 mt-2">{order.payment_code}</div>
           <div className="text-muted small">Meja {order.table_number}</div>
         </div>
@@ -724,24 +649,15 @@ function ScanTab({ order, orderItems, table, videoRef, scannerOn, scannerError, 
 
   return (
     <div className="scan-home text-center pb-5">
-      <PageTop icon="bi-qr-code-scan" title="Scan Meja" subtitle="Arahkan kamera ke QR yang ada di meja warung." />
-      <div className={`scan-status-pill ${table ? 'active' : ''}`}>
-        <i className={`bi ${table ? 'bi-check-circle-fill' : 'bi-geo-alt'}`} />
-        {table ? `Meja ${table.table_number} aktif` : 'Meja belum dipilih'}
+      <div className="scan-camera-box">
+        <video ref={videoRef} className="w-100 h-100 object-fit-cover" autoPlay playsInline muted />
+        {!scannerOn && <div className="scan-placeholder"><i className="bi bi-qr-code-scan" /><span>Arahkan kamera ke QR meja</span></div>}
+        {scannerOn && <div className="scan-frame position-absolute top-50 start-50 translate-middle"><span /></div>}
       </div>
-      <div className="scan-camera-box mt-3">
-        <video ref={videoRef} className="scan-video-feed w-100 h-100 object-fit-cover" autoPlay playsInline muted />
-        {!scannerOn && <div className="scan-placeholder"><i className="bi bi-qr-code-scan" /><span>Scan QR Meja</span><small>Kamera akan meminta izin otomatis. Pastikan QR masuk ke kotak scan.</small></div>}
-        {scannerOn && <div className="scan-frame position-absolute top-50 start-50 translate-middle"><span className="scan-line" /></div>}
-      </div>
-      <div className="small text-muted mt-3">{scannerOn ? 'Arahkan kamera belakang ke QR meja' : 'Tekan nyalakan kamera bila popup izin belum muncul'}</div>
-      {scannerError && <div className="alert alert-warning rounded-4 small mt-3 mb-0">{scannerError}</div>}
-      <div className="scan-actions-grid mt-3">
-        <button onClick={startScanner} className="btn btn-pratapa rounded-pill"><i className="bi bi-camera-video me-1" />{scannerOn ? 'Scanning...' : 'Nyalakan Kamera'}</button>
-        <label className="btn btn-light rounded-pill fw-bold mb-0">
-          <i className="bi bi-image me-1" />Foto QR
-          <input type="file" accept="image/*" capture="environment" hidden onChange={(e) => scanQrImage(e.target.files?.[0])} />
-        </label>
+      <div className="small text-muted mt-3">{table ? `Meja aktif: ${table.table_number}` : 'Belum ada meja aktif'}</div>
+      <div className="d-flex gap-2 mt-3">
+        <button onClick={startScanner} className="btn btn-pratapa flex-fill rounded-pill"><i className="bi bi-camera-video me-1" />Nyalakan Kamera</button>
+        <label className="btn btn-outline-primary rounded-pill mb-0"><i className="bi bi-image me-1" />Foto QR<input type="file" accept="image/*" capture="environment" hidden onChange={(e) => scanImageFile(e.target.files?.[0])} /></label>
         <button onClick={stopScanner} className="btn btn-outline-dark rounded-pill">Stop</button>
       </div>
       <div className="powered-text mt-4">Powered By Fizzx</div>
@@ -752,12 +668,18 @@ function ScanTab({ order, orderItems, table, videoRef, scannerOn, scannerError, 
 function HistoryTab({ orders, hasSession }: { orders: OrderWithItems[]; hasSession: boolean }) {
   return (
     <div className="history-screen pb-5">
-      <PageTop icon="bi-receipt" title="History Belanja" subtitle="Cek lagi jajanan yang pernah kamu pesan di warung ini." action={<div className="date-badge">{new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' }).format(new Date())}</div>} />
+      <div className="d-flex justify-content-between align-items-start gap-3 mb-3">
+        <div>
+          <h2 className="history-title">History Belanja</h2>
+          <p className="history-subtitle">KAMU UDAH BELANJA APA AJA DISINI?</p>
+        </div>
+        <div className="date-badge">{new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: '2-digit', year: '2-digit' }).format(new Date())}</div>
+      </div>
 
       {!hasSession && (
         <div className="history-login-note mb-3">
           <i className="bi bi-info-circle-fill me-2" />
-          Kamu tetap bisa order tanpa login. History sekarang tersimpan di perangkat ini; <Link href="/login" className="fw-black text-decoration-none">login</Link> supaya riwayat tersimpan lebih aman.
+          Kamu tetap bisa order tanpa login. History sekarang tersimpan di perangkat ini; <Link href="/login?next=/" className="fw-black text-decoration-none">login customer</Link> supaya riwayat tersimpan lebih aman.
         </div>
       )}
 
@@ -788,120 +710,29 @@ function HistoryTab({ orders, hasSession }: { orders: OrderWithItems[]; hasSessi
   );
 }
 
-function ProfileTab({ name, saveName, table, hasSession, profile, logoutCustomer }: { name: string; saveName: (value: string) => void; table: TableRow | null; hasSession: boolean; profile: Profile | null; logoutCustomer: () => void }) {
-  const [draftName, setDraftName] = useState(name);
-  const [compactMode, setCompactMode] = useState(false);
-  const [notifOn, setNotifOn] = useState(true);
-
-  useEffect(() => setDraftName(name), [name]);
-  useEffect(() => {
-    setCompactMode(window.localStorage.getItem('warunk-compact-mode') === '1');
-    setNotifOn(window.localStorage.getItem('warunk-notif-on') !== '0');
-  }, []);
-
-  function toggleCompact() {
-    const next = !compactMode;
-    setCompactMode(next);
-    window.localStorage.setItem('warunk-compact-mode', next ? '1' : '0');
-  }
-
-  async function toggleNotif() {
-    const next = !notifOn;
-    if (next) {
-      const permission = await (window as any).WarunkPush?.requestPermission?.();
-      if (permission && permission !== 'granted') return;
-      await (window as any).WarunkPush?.notify?.({
-        title: 'Notifikasi pesanan aktif',
-        body: 'Update status pesanan akan muncul realtime.',
-        tag: 'warunk-customer-notif',
-        url: '/'
-      });
-    }
-    setNotifOn(next);
-    window.localStorage.setItem('warunk-notif-on', next ? '1' : '0');
-  }
-
+function ProfileTab({ name, saveName, table, hasSession, logoutCustomer }: { name: string; saveName: (value: string) => void; table: TableRow | null; hasSession: boolean; logoutCustomer: () => void }) {
   return (
-    <div className="profile-screen-v2 pb-5">
-      <PageTop icon="bi-person" title="Profile" subtitle="Atur nama, akun, dan kenyamanan belanja kamu." />
-
-      <div className="profile-hero-card text-center">
-        <div className="profile-blob mx-auto"><i className="bi bi-person" /></div>
-        <h2 className="mb-1">{name || 'USER'}</h2>
-        <div className="profile-level mb-3">{hasSession ? 'Akun tersinkron' : 'Tamu warung'}</div>
-        <div className="profile-status-grid">
-          <div><span>Meja</span><strong>{table ? table.table_number : '-'}</strong></div>
-          <div><span>Bayar</span><strong>Kasir</strong></div>
-          <div><span>History</span><strong>{hasSession ? 'Aman' : 'Lokal'}</strong></div>
-        </div>
+    <div className="profile-screen text-center pb-5">
+      <div className="profile-blob mx-auto">
+        <i className="bi bi-person" />
       </div>
-
-      <div className="settings-card mt-3">
-        <h3>Pengaturan Akun</h3>
-        <label className="setting-label">Nama tampilan</label>
-        <div className="input-group input-group-lg profile-name-group">
-          <input value={draftName} onChange={(e) => setDraftName(e.target.value)} className="form-control rounded-start-pill" placeholder="Nama kamu" />
-          <button className="btn btn-pratapa rounded-end-pill" onClick={() => saveName(draftName)}>Simpan</button>
-        </div>
-        <div className="settings-list mt-3">
-          <SettingsRow icon="bi-shield-check" title="Status akun" value={hasSession ? profile?.role === 'customer' ? 'Customer' : 'Staff' : 'Belum login'} />
-          <SettingsRow icon="bi-receipt-cutoff" title="Riwayat belanja" value={hasSession ? 'Tersimpan di akun' : 'Tersimpan di HP ini'} />
-          <SettingsToggle icon="bi-bell" title="Notifikasi pesanan" checked={notifOn} onChange={toggleNotif} />
-          <SettingsToggle icon="bi-grid-3x3-gap" title="Tampilan ringkas" checked={compactMode} onChange={toggleCompact} />
-        </div>
+      <input value={name} onChange={(e) => saveName(e.target.value)} className="profile-name-input" aria-label="Nama customer" />
+      <div className="profile-level">Lv 001</div>
+      <div className="soft-card p-3 mt-4 text-start">
+        <div className="d-flex justify-content-between"><span className="text-muted">Status meja</span><strong>{table ? `Meja ${table.table_number}` : 'Belum scan'}</strong></div>
+        <div className="d-flex justify-content-between mt-2"><span className="text-muted">Mode bayar</span><strong>Bayar di Kasir</strong></div>
+        <div className="d-flex justify-content-between mt-2"><span className="text-muted">History</span><strong>{hasSession ? 'Tersinkron' : 'Perangkat ini'}</strong></div>
       </div>
-
-      <div className="settings-card mt-3">
-        <h3>Bantuan Warung</h3>
-        <div className="settings-list">
-          <SettingsRow icon="bi-qr-code-scan" title="Cara pesan" value="Scan QR meja" />
-          <SettingsRow icon="bi-cash-coin" title="Pembayaran" value="Tunjukkan QR ke kasir" />
-          <SettingsRow icon="bi-headset" title="Butuh bantuan" value="Panggil kasir" />
-        </div>
-      </div>
-
-      <div className="profile-note mt-3"><i className="bi bi-shield-check me-1" />Kamu bisa pesan tanpa login. Login hanya untuk menyimpan history saat ganti perangkat.</div>
-      <div className="d-grid gap-2 mt-3">
+      <div className="profile-note mt-3"><i className="bi bi-shield-check me-1" />Order tidak wajib login. Login customer diperlukan agar history tersimpan permanen.</div>
+      <div className="d-flex justify-content-center flex-wrap gap-2 mt-4">
         {hasSession ? (
-          <button onClick={logoutCustomer} className="btn btn-outline-danger rounded-pill px-3">Logout Akun</button>
+          <button onClick={logoutCustomer} className="btn btn-sm btn-light rounded-pill px-3">Logout Akun</button>
         ) : (
-          <Link href="/login" className="btn btn-pratapa rounded-pill px-3">Masuk / Daftar Akun</Link>
+          <Link href="/login?next=/" className="btn btn-sm btn-light rounded-pill px-3">Login History</Link>
         )}
+        <Link href="/login" className="btn btn-sm btn-outline-light rounded-pill px-3">Login Staff</Link>
       </div>
     </div>
-  );
-}
-
-function PageTop({ icon, title, subtitle, action }: { icon: string; title: string; subtitle: string; action?: React.ReactNode }) {
-  return (
-    <div className="page-top-card">
-      <div className="page-top-icon"><i className={`bi ${icon}`} /></div>
-      <div className="flex-grow-1">
-        <h1>{title}</h1>
-        <p>{subtitle}</p>
-      </div>
-      {action}
-    </div>
-  );
-}
-
-function SettingsRow({ icon, title, value }: { icon: string; title: string; value: string }) {
-  return (
-    <div className="settings-row">
-      <div className="settings-icon"><i className={`bi ${icon}`} /></div>
-      <span>{title}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function SettingsToggle({ icon, title, checked, onChange }: { icon: string; title: string; checked: boolean; onChange: () => void }) {
-  return (
-    <button type="button" className="settings-row settings-toggle" onClick={onChange}>
-      <div className="settings-icon"><i className={`bi ${icon}`} /></div>
-      <span>{title}</span>
-      <strong className={checked ? 'toggle-on' : ''}>{checked ? 'Aktif' : 'Mati'}</strong>
-    </button>
   );
 }
 

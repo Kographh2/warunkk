@@ -5,11 +5,11 @@ Web app warung digital realtime memakai **Next.js App Router**, **Bootstrap 5**,
 ## Fitur utama
 
 - Customer masuk langsung ke **home** di `/` tanpa landing page.
-- Tampilan customer dibuat mengikuti mockup mobile PRATAPA MART: home, menu, scan, history, profile/settings, bottom navigation, dan checkout bar. Header besar hanya tampil di halaman yang cocok, bukan di semua tab.
+- Tampilan customer dibuat mengikuti mockup mobile PRATAPA MART: home, menu, scan, history, profile, bottom navigation, dan checkout bar.
 - Customer scan QR meja lalu masuk ke `/?slug=...&tableNumber=...`.
 - Customer bisa order tanpa login, pilih menu, tambah ke keranjang, checkout, lalu mendapat QR pembayaran.
 - Payment hanya **bayar di kasir**. Customer menunjukkan QR pembayaran ke kasir.
-- Kasir scan QR memakai kamera laptop/HP, upload/foto QR, atau input kode manual untuk mengubah `payment_status` menjadi `paid` dan `status` menjadi `paid` secara realtime.
+- Kasir scan QR atau input kode manual untuk mengubah `payment_status` menjadi `paid` dan `status` menjadi `paid` secara realtime.
 - Customer melihat status order realtime: menunggu bayar, paid, preparing, ready, completed. History anonymous tersimpan di perangkat; jika customer login Supabase, order menyimpan `customer_id` supaya history bisa tersinkron.
 - Dashboard POS role-based dengan table order, diagram omzet/status, antrean meja, dan tampilan responsive HP/PC:
   - **Owner:** full access, laporan, user & role, menu, QR meja, order, kasir.
@@ -23,14 +23,15 @@ Web app warung digital realtime memakai **Next.js App Router**, **Bootstrap 5**,
 - `/` home customer langsung.
 - `/?slug=<qr_slug>&tableNumber=<nomor>` URL QR meja customer.
 - `/order?slug=<qr_slug>&tableNumber=<nomor>` tetap disediakan sebagai kompatibilitas dan menampilkan UI customer yang sama.
-- `/login` satu halaman masuk/daftar untuk customer dan staff. Routing akses dilakukan otomatis sesuai akun.
+- `/customer-login` login/daftar customer opsional untuk menyimpan history.
+- `/login` login staff.
 - `/dashboard` POS dashboard realtime dengan table dan diagram.
 - `/dashboard/orders` order table realtime dengan panel detail POS dan update status.
 - `/dashboard/menu` CRUD menu manual.
 - `/dashboard/tables` generate/print QR meja.
 - `/dashboard/users` owner mengatur role.
 - `/dashboard/reports` laporan owner.
-- `/kasir` scan QR payment dengan preview kamera besar, fallback foto/upload QR, dan input manual.
+- `/kasir` scan QR payment.
 
 ## Cara menjalankan lokal
 
@@ -73,7 +74,7 @@ Buka `http://localhost:3000`.
    - `payment_status = unpaid`
    - `payment_method = cashier_counter`
 4. Customer menunjukkan QR pembayaran.
-5. Kasir membuka `/kasir`, scan QR dengan kamera, upload/foto QR, atau input kode manual.
+5. Kasir membuka `/kasir`, scan QR atau input kode manual.
 6. Kasir klik **Konfirmasi Bayar di Kasir**.
 7. Sistem update order menjadi:
    - `status = paid`
@@ -95,30 +96,20 @@ Buka `http://localhost:3000`.
 
 - Jangan upload `node_modules` ke hosting.
 - Deploy ke Vercel, isi environment variable yang sama.
-- Untuk scanner kamera, gunakan HTTPS atau localhost karena browser membutuhkan secure context. Scanner memakai library `qr-scanner`, tidak mirror, prioritas kamera belakang, punya animasi scan, fallback foto/upload QR, dan input manual.
+- Untuk scanner kamera, gunakan HTTPS karena browser membutuhkan secure context.
+- Scanner memakai library `qr-scanner`, tidak bergantung pada `BarcodeDetector`. Jika kamera dibatasi browser/perangkat, customer/kasir tetap bisa memakai tombol Foto QR atau input kode manual di kasir.
 - Policy RLS di file SQL dibuat praktis untuk MVP. Untuk produksi besar, sebaiknya public read order dibatasi dengan token/order lookup endpoint agar data transaksi lebih privat.
 
-## PWA, install app, dan notifikasi
+## Catatan Deploy Vercel
 
-Update ini sudah menambahkan:
+ZIP ini sengaja tidak menyertakan `package-lock.json` karena lockfile dari environment lokal bisa berisi registry internal dan membuat Vercel gagal saat `npm install`.
 
-- `public/manifest.webmanifest` untuk mode install/PWA.
-- `public/sw.js` untuk service worker, cache ringan, notification click, dan handler push/message.
-- `public/push-notification.js` untuk popup izin notifikasi, local realtime notification, sound, dan helper Push API.
-- `public/sound.mp3` sebagai suara notifikasi realtime.
-- Popup UI install/notifikasi yang muncul otomatis di aplikasi.
+Untuk deploy:
+1. Push semua file ke GitHub tanpa `node_modules` dan tanpa `package-lock.json`.
+2. Di Vercel, set Environment Variables:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `NEXT_PUBLIC_APP_URL`
+3. Build memakai Node 20 dan npm dari konfigurasi `package.json`/`vercel.json`.
 
-Catatan platform:
-
-- Android/Chrome/Edge bisa memunculkan tombol **Install App** otomatis saat browser mengirim event `beforeinstallprompt`.
-- iPhone/iPad tidak selalu menyediakan popup install otomatis dari browser. UI aplikasi akan menampilkan langkah **Share > Add to Home Screen**. Setelah dibuka dari Home Screen, user bisa mengizinkan notifikasi.
-- Realtime alert di dalam aplikasi langsung aktif saat Supabase Realtime menerima order/status baru. Push notification jarak jauh saat browser tertutup penuh membutuhkan server push/VAPID. Helper `subscribeToPush(vapidPublicKey)` sudah tersedia di `public/push-notification.js` untuk disambungkan ke Supabase Edge Function/backend push.
-
-## Update UX terbaru
-
-- Halaman QR pembayaran customer sekarang memakai teks **QR pembayaran untuk kasir**, bukan scan meja.
-- Header besar hanya muncul di Home supaya Menu/Scan/History/Profile lebih rapi.
-- Copywriting customer dibuat lebih natural untuk warung.
-- Warna biru dibuat lebih minimalis dan clean.
-- Kasir tetap bisa scan tanpa alat scanner: kamera laptop/HP, foto/upload QR, atau input kode manual.
-- Admin/owner/kasir mendapat alert realtime + suara saat order baru masuk.
+Jika Vercel masih memakai cache lama, klik **Redeploy** lalu centang **Clear build cache**.
