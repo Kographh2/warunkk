@@ -1,5 +1,11 @@
-import { redirect } from 'next/navigation';
+'use client';
+
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { LoadingScreen } from '@/components/LoadingScreen';
 
 export default function CustomerLoginRedirect() {
-  redirect('/login?next=/');
+  const router = useRouter();
+  useEffect(() => { router.replace('/login?next=/'); }, [router]);
+  return <LoadingScreen label="Membuka halaman masuk..." />;
 }
