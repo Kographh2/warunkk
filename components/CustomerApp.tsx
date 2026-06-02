@@ -59,7 +59,6 @@ export function CustomerApp() {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const qrScannerRef = useRef<any>(null);
 
   const slug = params.get('slug') || '';
   const tableNumber = params.get('tableNumber') || '';
@@ -112,20 +111,8 @@ export function CustomerApp() {
   useEffect(() => {
     const savedName = window.localStorage.getItem('warunk-customer-name');
     if (savedName) setCustomerName(savedName);
-    supabase.auth.getSession().then(async ({ data }) => {
-      setHasSession(Boolean(data.session));
-      if (data.session?.user?.id) {
-        const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', data.session.user.id).maybeSingle();
-        if (profile?.full_name) setCustomerName(profile.full_name);
-      }
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      setHasSession(Boolean(session));
-      if (session?.user?.id) {
-        const { data: profile } = await supabase.from('profiles').select('full_name').eq('id', session.user.id).maybeSingle();
-        if (profile?.full_name) setCustomerName(profile.full_name);
-      }
-    });
+    supabase.auth.getSession().then(({ data }) => setHasSession(Boolean(data.session)));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => setHasSession(Boolean(session)));
     return () => listener.subscription.unsubscribe();
   }, []);
 
@@ -208,14 +195,6 @@ export function CustomerApp() {
     return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order?.id]);
-
-  useEffect(() => {
-    if (activeTab === 'scan' && !order && !scannerOn) {
-      startScanner();
-    }
-    if (activeTab !== 'scan') stopScanner();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, order?.id]);
 
   useEffect(() => () => stopScanner(), []);
 
@@ -354,68 +333,43 @@ export function CustomerApp() {
     setActiveTab('home');
   }
 
-  async function handleQrRaw(raw: string) {
-    const found = parseQrValue(raw);
-    if (found.slug || found.tableNumber) {
-      stopScanner();
-      const url = `/${found.slug ? `?slug=${encodeURIComponent(found.slug)}` : `?tableNumber=${encodeURIComponent(found.tableNumber)}`}${found.slug && found.tableNumber ? `&tableNumber=${encodeURIComponent(found.tableNumber)}` : ''}`;
-      router.replace(url);
-      return;
-    }
-    setMessage('QR belum sesuai. Pastikan yang discan adalah QR meja dari warung.');
-  }
-
   async function startScanner() {
     setMessage('');
-    if (scannerOn || order) return;
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMessage('Kamera tidak bisa dibuka di browser ini. Coba buka dari HTTPS/localhost atau pakai tombol Ambil Foto QR.');
+    if (!('BarcodeDetector' in window)) {
+      setMessage('Browser belum mendukung scan kamera. Buka link QR langsung dari kamera HP atau pakai Chrome/Edge terbaru.');
       return;
     }
-    if (!videoRef.current) return;
-    try {
-      const QrScanner = (await import('qr-scanner')).default;
-      stopScanner();
-      const scanner = new QrScanner(
-        videoRef.current,
-        (result: any) => {
-          const raw = typeof result === 'string' ? result : result?.data;
-          if (raw) handleQrRaw(raw);
-        },
-        {
-          preferredCamera: 'environment',
-          returnDetailedScanResult: true,
-          maxScansPerSecond: 8,
-          highlightScanRegion: true,
-          highlightCodeOutline: true
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    streamRef.current = stream;
+    if (videoRef.current) videoRef.current.srcObject = stream;
+    setScannerOn(true);
+    const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
+    let active = true;
+    const tick = async () => {
+      if (!active || !videoRef.current) return;
+      try {
+        const barcodes = await detector.detect(videoRef.current);
+        if (barcodes?.length) {
+          const found = parseQrValue(barcodes[0].rawValue);
+          stopScanner();
+          if (found.slug || found.tableNumber) {
+            const url = `/${found.slug ? `?slug=${encodeURIComponent(found.slug)}` : `?tableNumber=${encodeURIComponent(found.tableNumber)}`}${found.slug && found.tableNumber ? `&tableNumber=${encodeURIComponent(found.tableNumber)}` : ''}`;
+            router.replace(url);
+            return;
+          }
+          setMessage('QR tidak berisi nomor meja yang valid.');
+          return;
         }
-      );
-      qrScannerRef.current = scanner;
-      await scanner.start();
-      setScannerOn(true);
-    } catch (error: any) {
-      stopScanner();
-      const text = String(error?.message || error || '');
-      if (text.toLowerCase().includes('permission')) setMessage('Izin kamera belum diberikan. Tekan Allow/Izinkan di popup browser.');
-      else setMessage('Kamera belum bisa dibuka. Pastikan halaman memakai HTTPS/localhost atau gunakan Ambil Foto QR.');
-    }
-  }
-
-  async function scanImageFile(file?: File | null) {
-    if (!file) return;
-    setMessage('Membaca QR dari foto...');
-    try {
-      const QrScanner = (await import('qr-scanner')).default;
-      const raw = await QrScanner.scanImage(file);
-      await handleQrRaw(typeof raw === 'string' ? raw : String((raw as any)?.data || raw));
-    } catch {
-      setMessage('QR belum terbaca dari foto. Coba foto lebih dekat dan pastikan QR tidak blur.');
-    }
+      } catch {
+        // keep scanning
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    return () => { active = false; };
   }
 
   function stopScanner() {
-    try { qrScannerRef.current?.stop(); qrScannerRef.current?.destroy(); } catch {}
-    qrScannerRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setScannerOn(false);
@@ -426,22 +380,20 @@ export function CustomerApp() {
   return (
     <main className="customer-page">
       <div className="customer-shell">
-        {(activeTab === 'home' || activeTab === 'menu') && (
-          <header className="pratapa-hero">
-            <div className="d-flex align-items-start justify-content-between gap-3">
-              <div>
-                <div className="hero-mini mb-3">HI, {customerName || 'USER'}</div>
-                <div className="hero-title">WELCOME TO,<br />{settings.name}</div>
-              </div>
-              <div className="time-pill">{clock}</div>
+        <header className="pratapa-hero">
+          <div className="d-flex align-items-start justify-content-between gap-3">
+            <div>
+              <div className="hero-mini mb-3">HI, {customerName || 'USER'}</div>
+              <div className="hero-title">WELCOME TO,<br />{settings.name}</div>
             </div>
-            <p className="hero-copy mb-2">{settings.tagline}</p>
-            <p className="hero-copy hero-copy-strong mb-0">Pilih jajanan favoritmu, bayar di kasir, lalu tinggal tunggu dipanggil.</p>
-            <div className="table-chip table-chip-soft">
-              {table ? <><i className="bi bi-check-circle-fill me-1" /> Meja {table.table_number}</> : <><i className="bi bi-qr-code-scan me-1" /> Scan QR meja dulu</>}
-            </div>
-          </header>
-        )}
+            <div className="time-pill">{clock}</div>
+          </div>
+          <p className="hero-copy mb-2">{settings.tagline}</p>
+          <p className="hero-copy hero-copy-strong mb-0">KAMU TINGGAL SCAN LANGSUNG QR<br />YANG ADA DI MEJA KAMU!</p>
+          <div className="table-chip">
+            {table ? <><i className="bi bi-check-circle-fill me-1" /> Meja {table.table_number}</> : <><i className="bi bi-qr-code-scan me-1" /> Belum scan meja</>}
+          </div>
+        </header>
 
         {message && <div className="alert alert-info customer-alert rounded-4 py-2 small mb-3">{message}</div>}
 
@@ -478,7 +430,6 @@ export function CustomerApp() {
               scannerOn={scannerOn}
               startScanner={startScanner}
               stopScanner={stopScanner}
-              scanImageFile={scanImageFile}
               clearActiveOrder={clearActiveOrder}
             />
           )}
@@ -574,8 +525,8 @@ function GuestOrderNote({ onScan, table }: { onScan: () => void; table: TableRow
     <div className="guest-order-note mb-3">
       <div className="guest-note-icon"><i className="bi bi-lightning-charge-fill" /></div>
       <div className="flex-grow-1">
-        <strong>Pesan langsung, tanpa ribet</strong>
-        <p className="mb-0">Bisa pesan tanpa login. Login hanya diperlukan kalau kamu ingin riwayat jajan tersimpan permanen.</p>
+        <strong>Order bisa tanpa login</strong>
+        <p className="mb-0">Langsung pilih menu dan bayar di kasir. Supaya history tersimpan aman dan bisa dibuka lagi, login dulu sebelum belanja rutin.</p>
       </div>
       <button onClick={onScan} className="btn btn-sm btn-light rounded-pill fw-bold">{table ? `Meja ${table.table_number}` : 'Scan QR'}</button>
     </div>
@@ -603,7 +554,7 @@ function ProductCard({ item, addToCart }: { item: MenuItem; addToCart: (item: Me
   );
 }
 
-function ScanTab({ order, orderItems, table, videoRef, scannerOn, startScanner, stopScanner, scanImageFile, clearActiveOrder }: {
+function ScanTab({ order, orderItems, table, videoRef, scannerOn, startScanner, stopScanner, clearActiveOrder }: {
   order: Order | null;
   orderItems: OrderItem[];
   table: TableRow | null;
@@ -611,7 +562,6 @@ function ScanTab({ order, orderItems, table, videoRef, scannerOn, startScanner, 
   scannerOn: boolean;
   startScanner: () => void;
   stopScanner: () => void;
-  scanImageFile: (file?: File | null) => void;
   clearActiveOrder: () => void;
 }) {
   if (order) {
@@ -623,7 +573,7 @@ function ScanTab({ order, orderItems, table, videoRef, scannerOn, startScanner, 
           <span className={`badge rounded-pill ${orderStatusBadge(order.status)} mb-2`}>{orderStatusLabel(order.status)}</span>
           <h2 className="fw-bold mb-1">Tunjukkan QR ke Kasir</h2>
           <p className="text-muted small mb-3">Kasir scan QR ini setelah kamu bayar tunai/non-tunai di kasir.</p>
-          <QRCanvas value={qrValue} title="" subtitle="QR PEMBAYARAN UNTUK KASIR" />
+          <QRCanvas value={qrValue} title="" subtitle="SCAN MEJA KAMU DISINI!" />
           <div className="fw-bold fs-5 mt-2">{order.payment_code}</div>
           <div className="text-muted small">Meja {order.table_number}</div>
         </div>
@@ -651,13 +601,12 @@ function ScanTab({ order, orderItems, table, videoRef, scannerOn, startScanner, 
     <div className="scan-home text-center pb-5">
       <div className="scan-camera-box">
         <video ref={videoRef} className="w-100 h-100 object-fit-cover" autoPlay playsInline muted />
-        {!scannerOn && <div className="scan-placeholder"><i className="bi bi-qr-code-scan" /><span>Arahkan kamera ke QR meja</span></div>}
-        {scannerOn && <div className="scan-frame position-absolute top-50 start-50 translate-middle"><span /></div>}
+        {!scannerOn && <div className="scan-placeholder"><i className="bi bi-qr-code-scan" /><span>SCAN MEJA KAMU DISINI!</span></div>}
+        {scannerOn && <div className="scan-frame position-absolute top-50 start-50 translate-middle" />}
       </div>
       <div className="small text-muted mt-3">{table ? `Meja aktif: ${table.table_number}` : 'Belum ada meja aktif'}</div>
       <div className="d-flex gap-2 mt-3">
-        <button onClick={startScanner} className="btn btn-pratapa flex-fill rounded-pill"><i className="bi bi-camera-video me-1" />Nyalakan Kamera</button>
-        <label className="btn btn-outline-primary rounded-pill mb-0"><i className="bi bi-image me-1" />Foto QR<input type="file" accept="image/*" capture="environment" hidden onChange={(e) => scanImageFile(e.target.files?.[0])} /></label>
+        <button onClick={startScanner} className="btn btn-pratapa flex-fill rounded-pill"><i className="bi bi-camera-video me-1" />Mulai Scan</button>
         <button onClick={stopScanner} className="btn btn-outline-dark rounded-pill">Stop</button>
       </div>
       <div className="powered-text mt-4">Powered By Fizzx</div>
@@ -679,7 +628,7 @@ function HistoryTab({ orders, hasSession }: { orders: OrderWithItems[]; hasSessi
       {!hasSession && (
         <div className="history-login-note mb-3">
           <i className="bi bi-info-circle-fill me-2" />
-          Kamu tetap bisa order tanpa login. History sekarang tersimpan di perangkat ini; <Link href="/login?next=/" className="fw-black text-decoration-none">login customer</Link> supaya riwayat tersimpan lebih aman.
+          Kamu tetap bisa order tanpa login. History sekarang tersimpan di perangkat ini; <Link href="/customer-login" className="fw-black text-decoration-none">login customer</Link> supaya riwayat tersimpan lebih aman.
         </div>
       )}
 
@@ -728,7 +677,7 @@ function ProfileTab({ name, saveName, table, hasSession, logoutCustomer }: { nam
         {hasSession ? (
           <button onClick={logoutCustomer} className="btn btn-sm btn-light rounded-pill px-3">Logout Akun</button>
         ) : (
-          <Link href="/login?next=/" className="btn btn-sm btn-light rounded-pill px-3">Login History</Link>
+          <Link href="/customer-login" className="btn btn-sm btn-light rounded-pill px-3">Login History</Link>
         )}
         <Link href="/login" className="btn btn-sm btn-outline-light rounded-pill px-3">Login Staff</Link>
       </div>

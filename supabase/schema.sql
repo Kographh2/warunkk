@@ -205,7 +205,6 @@ create policy "Public can read order events" on public.order_events for select u
 
 -- Staff dashboards
 create policy "Staff read profiles" on public.profiles for select using (public.is_staff() or auth.uid() = id);
-create policy "Users update own profile" on public.profiles for update using (auth.uid() = id) with check (auth.uid() = id);
 create policy "Owner manage profiles" on public.profiles for all using (public.is_owner()) with check (public.is_owner());
 
 create policy "Admin owner manage tables" on public.tables for all using (public.is_manager()) with check (public.is_manager());

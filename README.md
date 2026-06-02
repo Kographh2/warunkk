@@ -97,7 +97,7 @@ Buka `http://localhost:3000`.
 - Jangan upload `node_modules` ke hosting.
 - Deploy ke Vercel, isi environment variable yang sama.
 - Untuk scanner kamera, gunakan HTTPS karena browser membutuhkan secure context.
-- Scanner memakai library `qr-scanner`, tidak bergantung pada `BarcodeDetector`. Jika kamera dibatasi browser/perangkat, customer/kasir tetap bisa memakai tombol Foto QR atau input kode manual di kasir.
+- Jika browser tidak mendukung `BarcodeDetector`, kasir tetap bisa memasukkan kode payment secara manual.
 - Policy RLS di file SQL dibuat praktis untuk MVP. Untuk produksi besar, sebaiknya public read order dibatasi dengan token/order lookup endpoint agar data transaksi lebih privat.
 
 ## Catatan Deploy Vercel
@@ -109,7 +109,7 @@ Untuk deploy:
 2. Di Vercel, set Environment Variables:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `NEXT_PUBLIC_APP_URL`
+   - `NEXT_PUBLIC_SITE_URL`
 3. Build memakai Node 20 dan npm dari konfigurasi `package.json`/`vercel.json`.
 
 Jika Vercel masih memakai cache lama, klik **Redeploy** lalu centang **Clear build cache**.
