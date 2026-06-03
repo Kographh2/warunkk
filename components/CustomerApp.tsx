@@ -8,6 +8,7 @@ import { LoadingScreen } from '@/components/LoadingScreen';
 import { QRCanvas } from '@/components/QRCanvas';
 import { StatusTimeline } from '@/components/StatusTimeline';
 import { appUrl, compactDate, orderStatusBadge, orderStatusLabel, paymentCode, rupiah } from '@/lib/format';
+import { startQrCamera, type QrCameraSession } from '@/lib/camera';
 import { supabase } from '@/lib/supabase';
 import { CartItem, Category, MenuItem, Order, OrderItem, StoreSettings, TableRow } from '@/lib/types';
 
@@ -58,7 +59,7 @@ export function CustomerApp() {
   const params = useSearchParams();
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const scannerRef = useRef<QrCameraSession | null>(null);
 
   const slug = params.get('slug') || '';
   const tableNumber = params.get('tableNumber') || '';
@@ -335,43 +336,35 @@ export function CustomerApp() {
 
   async function startScanner() {
     setMessage('');
-    if (!('BarcodeDetector' in window)) {
-      setMessage('Kamera belum bisa dibuka. Pastikan izin kamera aktif, lalu coba lagi di browser terbaru.');
-      return;
-    }
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-    streamRef.current = stream;
-    if (videoRef.current) videoRef.current.srcObject = stream;
+    if (!videoRef.current) return;
+
+    stopScanner();
     setScannerOn(true);
-    const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-    let active = true;
-    const tick = async () => {
-      if (!active || !videoRef.current) return;
-      try {
-        const barcodes = await detector.detect(videoRef.current);
-        if (barcodes?.length) {
-          const found = parseQrValue(barcodes[0].rawValue);
+
+    try {
+      scannerRef.current = await startQrCamera(
+        videoRef.current,
+        (raw) => {
+          const found = parseQrValue(raw);
           stopScanner();
           if (found.slug || found.tableNumber) {
             const url = `/${found.slug ? `?slug=${encodeURIComponent(found.slug)}` : `?tableNumber=${encodeURIComponent(found.tableNumber)}`}${found.slug && found.tableNumber ? `&tableNumber=${encodeURIComponent(found.tableNumber)}` : ''}`;
             router.replace(url);
             return;
           }
-          setMessage('QR tidak berisi nomor meja yang valid.');
-          return;
-        }
-      } catch {
-        // keep scanning
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-    return () => { active = false; };
+          setMessage('QR meja tidak valid. Coba scan QR yang ada di meja kamu.');
+        },
+        (errorMessage) => setMessage(errorMessage)
+      );
+    } catch {
+      setScannerOn(false);
+      setMessage('Kamera belum bisa dibuka. Pastikan izin kamera aktif, lalu coba lagi dari HTTPS atau localhost.');
+    }
   }
 
   function stopScanner() {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
+    scannerRef.current?.stop();
+    scannerRef.current = null;
     setScannerOn(false);
   }
 

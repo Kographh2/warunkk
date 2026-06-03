@@ -6,6 +6,7 @@ import { DashboardShell } from '@/components/DashboardShell';
 import { QRCanvas } from '@/components/QRCanvas';
 import { RoleGuard } from '@/components/RoleGuard';
 import { appUrl, compactDate, orderStatusBadge, orderStatusLabel, rupiah } from '@/lib/format';
+import { startQrCamera, scanQrFromImage, type QrCameraSession } from '@/lib/camera';
 import { supabase } from '@/lib/supabase';
 import { Order, OrderItem, Profile } from '@/lib/types';
 
@@ -33,7 +34,8 @@ function normalizeCode(raw: string) {
 function KasirScanner({ profile }: { profile: Profile }) {
   const params = useSearchParams();
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const scannerRef = useRef<QrCameraSession | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const [code, setCode] = useState(params.get('code') || '');
   const [message, setMessage] = useState('');
   const [found, setFound] = useState<OrderWithItems | null>(null);
@@ -110,38 +112,43 @@ function KasirScanner({ profile }: { profile: Profile }) {
 
   async function startCamera() {
     setMessage('');
-    if (!('BarcodeDetector' in window)) {
-      setMessage('Browser ini belum mendukung BarcodeDetector. Gunakan input kode manual atau scan lewat browser Chrome/Edge terbaru.');
-      return;
-    }
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-    streamRef.current = stream;
-    if (videoRef.current) videoRef.current.srcObject = stream;
+    if (!videoRef.current) return;
+
+    stopCamera();
     setScanning(true);
-    const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-    let active = true;
-    const tick = async () => {
-      if (!active || !videoRef.current) return;
-      try {
-        const barcodes = await detector.detect(videoRef.current);
-        if (barcodes?.length) {
-          const value = barcodes[0].rawValue;
+
+    try {
+      scannerRef.current = await startQrCamera(
+        videoRef.current,
+        async (value) => {
           stopCamera();
           setCode(normalizeCode(value));
           await findOrder(value);
-          return;
-        }
-      } catch {
-        // retry silently
-      }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+        },
+        (errorMessage) => setMessage(errorMessage)
+      );
+    } catch {
+      setScanning(false);
+      setMessage('Kamera tidak bisa dibuka. Pastikan browser sudah mengizinkan kamera dan situs berjalan di HTTPS atau localhost.');
+    }
+  }
+
+  async function handleQrImage(file?: File | null) {
+    if (!file) return;
+    setMessage('Membaca QR dari foto...');
+    try {
+      const value = await scanQrFromImage(file);
+      if (!value) throw new Error('QR kosong');
+      setCode(normalizeCode(value));
+      await findOrder(value);
+    } catch {
+      setMessage('QR belum terbaca dari foto. Pastikan gambar jelas dan tidak blur.');
+    }
   }
 
   function stopCamera() {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
+    scannerRef.current?.stop();
+    scannerRef.current = null;
     setScanning(false);
   }
 
@@ -163,10 +170,12 @@ function KasirScanner({ profile }: { profile: Profile }) {
               {!scanning && <div className="position-absolute top-50 start-50 translate-middle text-white text-center"><i className="bi bi-camera display-4" /><div>Camera idle</div></div>}
               {scanning && <div className="scan-frame position-absolute top-50 start-50 translate-middle" />}
             </div>
-            <div className="d-flex gap-2 mb-3">
+            <div className="d-flex gap-2 mb-3 flex-wrap">
               <button onClick={startCamera} className="btn btn-warunk rounded-pill flex-fill"><i className="bi bi-camera-video me-1" />Mulai Scan</button>
+              <button onClick={() => fileRef.current?.click()} className="btn btn-outline-dark rounded-pill"><i className="bi bi-image me-1" />Foto QR</button>
               <button onClick={stopCamera} className="btn btn-outline-dark rounded-pill">Stop</button>
             </div>
+            <input ref={fileRef} type="file" accept="image/*" capture="environment" className="d-none" onChange={(event) => handleQrImage(event.target.files?.[0])} />
             <label className="form-label fw-semibold">Atau masukkan kode / URL QR manual</label>
             <div className="input-group input-group-lg">
               <input value={code} onChange={(e) => setCode(e.target.value)} className="form-control rounded-start-pill" placeholder="WRK-..." />
