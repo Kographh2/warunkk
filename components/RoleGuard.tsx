@@ -47,8 +47,8 @@ export function RoleGuard({
         <div className="soft-card p-5 text-center mx-auto" style={{ maxWidth: 520 }}>
           <i className="bi bi-lock display-4 text-warunk" />
           <h1 className="fw-bold mt-3">Login diperlukan</h1>
-          <p className="text-muted">{error || 'Masuk sebagai owner, admin, atau kasir untuk membuka dashboard.'}</p>
-          <Link href="/login" className="btn btn-warunk rounded-pill px-4">Login Staff</Link>
+          <p className="text-muted">{error || 'Masuk memakai akun yang memiliki akses owner, admin, atau kasir untuk membuka dashboard.'}</p>
+          <Link href="/login" className="btn btn-warunk rounded-pill px-4">Masuk Akun</Link>
         </div>
       </main>
     );
