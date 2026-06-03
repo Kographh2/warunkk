@@ -8,29 +8,26 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "postinstall": "node -e \"console.log('Dependencies installed for WARUNK ONLINE')\""
+    "vercel-build": "node scripts/vercel-build.mjs",
+    "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.1",
-    "bootstrap": "^5.3.3",
-    "bootstrap-icons": "^1.11.3",
-    "next": "^15.1.7",
-    "qrcode": "^1.5.4",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "@supabase/supabase-js": "2.49.1",
+    "bootstrap": "5.3.3",
+    "bootstrap-icons": "1.11.3",
+    "next": "15.5.18",
+    "qrcode": "1.5.4",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "qr-scanner": "1.4.2"
   },
   "devDependencies": {
-    "@types/node": "^22.10.7",
-    "@types/qrcode": "^1.5.5",
-    "@types/react": "^19.0.7",
-    "@types/react-dom": "^19.0.3",
-    "eslint": "^9.19.0",
-    "eslint-config-next": "^15.1.7",
-    "typescript": "^5.7.3"
-  },
-  "packageManager": "npm@10.8.2",
-  "engines": {
-    "node": "20.x",
-    "npm": "10.x"
+    "@types/node": "22.10.7",
+    "@types/qrcode": "1.5.5",
+    "@types/react": "19.0.7",
+    "@types/react-dom": "19.0.3",
+    "eslint": "9.19.0",
+    "eslint-config-next": "15.5.18",
+    "typescript": "5.7.3"
   }
 }
