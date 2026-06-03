@@ -223,3 +223,123 @@ begin
   begin alter publication supabase_realtime add table public.tables; exception when duplicate_object then null; end;
   begin alter publication supabase_realtime add table public.app_settings; exception when duplicate_object then null; end;
 end $$;
+
+
+-- Customer account security/profile updates (safe to run multiple times)
+create table if not exists public.email_change_requests (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  current_email text,
+  requested_email text not null,
+  status text not null default 'pending' check (status in ('pending','approved','rejected')),
+  reviewed_by uuid references public.profiles(id) on delete set null,
+  reviewed_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.email_change_requests enable row level security;
+
+drop policy if exists "Customer create own email request" on public.email_change_requests;
+create policy "Customer create own email request" on public.email_change_requests
+for insert with check (auth.uid() = user_id);
+
+drop policy if exists "Customer read own email request" on public.email_change_requests;
+create policy "Customer read own email request" on public.email_change_requests
+for select using (auth.uid() = user_id or public.is_owner());
+
+drop policy if exists "Owner manage email requests" on public.email_change_requests;
+create policy "Owner manage email requests" on public.email_change_requests
+for all using (public.is_owner()) with check (public.is_owner());
+
+create or replace function public.update_my_customer_profile(new_full_name text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  update public.profiles
+  set full_name = nullif(trim(new_full_name), '')
+  where id = auth.uid();
+end;
+$$;
+
+create or replace function public.request_my_email_change(requested_email text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  if requested_email is null or position('@' in requested_email) = 0 then
+    raise exception 'Invalid email';
+  end if;
+
+  insert into public.email_change_requests (user_id, current_email, requested_email)
+  select auth.uid(), u.email, lower(trim(requested_email))
+  from auth.users u
+  where u.id = auth.uid();
+end;
+$$;
+
+create or replace function public.mask_email(email text)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  local_part text;
+  domain_part text;
+  domain_name text;
+  domain_ext text;
+begin
+  if email is null or position('@' in email) = 0 then
+    return 'email disensor';
+  end if;
+  local_part := split_part(email, '@', 1);
+  domain_part := split_part(email, '@', 2);
+  domain_name := split_part(domain_part, '.', 1);
+  domain_ext := replace(domain_part, domain_name || '.', '');
+  return left(local_part, 2) || '***' || right(local_part, 1) || '@' || left(domain_name, 1) || '***' || right(domain_name, 1) || case when domain_ext <> domain_part then '.' || domain_ext else '' end;
+end;
+$$;
+
+create or replace function public.customer_leaderboard(limit_count int default 10)
+returns table (
+  username text,
+  masked_email text,
+  total_spent numeric,
+  total_orders bigint,
+  level int
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    coalesce(nullif(trim(p.full_name), ''), 'Customer') as username,
+    public.mask_email(u.email) as masked_email,
+    coalesce(sum(o.total_amount), 0) as total_spent,
+    count(o.id) as total_orders,
+    greatest(1, floor(coalesce(sum(o.total_amount), 0) / 50000)::int + 1) as level
+  from public.orders o
+  join auth.users u on u.id = o.customer_id
+  left join public.profiles p on p.id = u.id
+  where o.customer_id is not null
+    and (o.payment_status = 'paid' or o.status in ('paid','preparing','ready','completed'))
+  group by p.full_name, u.email
+  order by total_spent desc, total_orders desc
+  limit greatest(1, least(coalesce(limit_count, 10), 50));
+$$;
+
+grant execute on function public.update_my_customer_profile(text) to authenticated;
+grant execute on function public.request_my_email_change(text) to authenticated;
+grant execute on function public.customer_leaderboard(int) to anon, authenticated;

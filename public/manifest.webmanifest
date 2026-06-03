@@ -1,14 +1,13 @@
 {
-  "name": "WARUNK ONLINE",
-  "short_name": "Warunk",
-  "description": "Warung digital realtime untuk order meja, kasir, dan dashboard POS.",
+  "name": "PRATAPA MART",
+  "short_name": "Pratapa",
+  "description": "Warung digital PRATAPA MART by FizzxDevv",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f5f8ff",
-  "theme_color": "#1f55d6",
+  "background_color": "#ffffff",
+  "theme_color": "#263E70",
   "icons": [
-    { "src": "/logo.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable" },
-    { "src": "/logo.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "/logo.svg", "sizes": "any", "type": "image/svg+xml" }
   ]
 }
