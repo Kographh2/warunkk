@@ -10,7 +10,7 @@ import { StatusTimeline } from '@/components/StatusTimeline';
 import { appUrl, compactDate, orderStatusBadge, orderStatusLabel, paymentCode, rupiah } from '@/lib/format';
 import { scanQrFromImage, startQrCamera, type QrCameraSession } from '@/lib/camera';
 import { supabase } from '@/lib/supabase';
-import { CartItem, Category, MenuItem, Order, OrderItem, StoreSettings, TableRow } from '@/lib/types';
+import { Announcement, CartItem, Category, MenuItem, Order, OrderItem, StoreSettings, TableRow } from '@/lib/types';
 
 type BottomTab = 'home' | 'menu' | 'scan' | 'history' | 'profile' | 'settings';
 type OrderWithItems = Order & { order_items?: OrderItem[] };
@@ -191,6 +191,8 @@ export function CustomerApp() {
   const [historyYear, setHistoryYear] = useState('');
   const [notificationEnabled, setNotificationEnabled] = useState(false);
   const [leaderboard, setLeaderboard] = useState<LeaderboardItem[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [latestAnnouncement, setLatestAnnouncement] = useState<Announcement | null>(null);
 
   const cartCount = cart.reduce((sum, item) => sum + item.qty, 0);
   const subtotal = cart.reduce((sum, item) => sum + Number(item.menu_item.price) * item.qty, 0);
@@ -304,6 +306,7 @@ export function CustomerApp() {
 
       await loadHistory();
       await loadLeaderboard();
+      await loadAnnouncements();
       setLoading(false);
     }
     load();
@@ -327,6 +330,23 @@ export function CustomerApp() {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('customer-announcements')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'announcements' }, (payload) => {
+        const item = payload.new as Announcement;
+        if (item.is_active) {
+          loadAnnouncements();
+          showAnnouncementAlert(item);
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'announcements' }, () => loadAnnouncements())
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'announcements' }, () => loadAnnouncements())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notificationEnabled]);
 
   useEffect(() => {
     if (!order?.id) return;
@@ -398,6 +418,40 @@ export function CustomerApp() {
     }
   }
 
+  async function loadAnnouncements() {
+    const { data } = await supabase
+      .from('announcements')
+      .select('*')
+      .eq('is_active', true)
+      .lte('publish_at', new Date().toISOString())
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+      .order('created_at', { ascending: false })
+      .limit(8);
+    setAnnouncements((data || []) as Announcement[]);
+  }
+
+  function showAnnouncementAlert(item: Announcement) {
+    setLatestAnnouncement(item);
+    if (!notificationEnabled) return;
+    const options: any = {
+      body: item.body,
+      icon: item.image_url || '/logo.svg',
+      badge: '/logo.svg',
+      image: item.image_url || undefined,
+      tag: `pratapa-${item.id}`,
+      data: item.cta_url || '/'
+    };
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((registration) => registration.showNotification(item.type === 'ads' ? `Ads Pratapa: ${item.title}` : item.title, options))
+        .catch(() => {
+          if ('Notification' in window && Notification.permission === 'granted') new Notification(item.title, options);
+        });
+    } else if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(item.title, options);
+    }
+  }
+
   async function saveName(value: string) {
     const nextName = value || 'USER';
     setCustomerName(nextName);
@@ -422,15 +476,26 @@ export function CustomerApp() {
         setMessage('Browser ini belum mendukung notifikasi. Kamu tetap bisa melihat status pesanan di halaman scan.');
         return;
       }
-      const permission = await Notification.requestPermission();
+      if ('serviceWorker' in navigator) {
+        await navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+      }
+      const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
       if (permission !== 'granted') {
         setMessage('Izin notifikasi belum aktif. Aktifkan dari pengaturan browser kalau ingin menerima update pesanan.');
         return;
       }
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.ready.then((registration) => registration.showNotification('Notifikasi Pratapa aktif', {
+          body: 'Info pesanan, broadcast, dan ads warung akan muncul di perangkat ini saat app/PWA aktif.',
+          icon: '/logo.svg',
+          badge: '/logo.svg',
+          tag: 'pratapa-notification-enabled'
+        })).catch(() => undefined);
+      }
     }
     window.localStorage.setItem('warunk-notification-enabled', String(nextValue));
     setNotificationEnabled(nextValue);
-    setMessage(nextValue ? 'Notifikasi pesanan aktif.' : 'Notifikasi pesanan dimatikan.');
+    setMessage(nextValue ? 'Notifikasi pesanan, broadcast, dan ads aktif.' : 'Notifikasi dimatikan.');
   }
 
   function notifyOrderStatus(status: string) {
@@ -638,6 +703,13 @@ export function CustomerApp() {
         )}
 
         {message && <div className="alert alert-info customer-alert rounded-4 py-2 small mb-3">{message}</div>}
+        {latestAnnouncement && (
+          <div className="customer-broadcast-toast">
+            <button type="button" onClick={() => setLatestAnnouncement(null)} aria-label="Tutup">×</button>
+            <strong>{latestAnnouncement.type === 'ads' ? 'Ads warung' : 'Info warung'}</strong>
+            <span>{latestAnnouncement.title}</span>
+          </div>
+        )}
 
         <section className={`customer-content ${!showHero ? 'customer-content-plain' : ''}`}>
           {activeTab === 'home' && (
@@ -648,6 +720,7 @@ export function CustomerApp() {
               onSeeMenu={() => setActiveTab('menu')}
               onScan={() => setActiveTab('scan')}
               table={table}
+              announcements={announcements}
             />
           )}
 
@@ -758,13 +831,14 @@ export function CustomerApp() {
   );
 }
 
-function HomeTab({ featured, bestSeller, addToCart, onSeeMenu, onScan, table }: { featured: MenuItem[]; bestSeller: MenuItem[]; addToCart: (item: MenuItem) => void; onSeeMenu: () => void; onScan: () => void; table: TableRow | null }) {
+function HomeTab({ featured, bestSeller, addToCart, onSeeMenu, onScan, table, announcements }: { featured: MenuItem[]; bestSeller: MenuItem[]; addToCart: (item: MenuItem) => void; onSeeMenu: () => void; onScan: () => void; table: TableRow | null; announcements: Announcement[] }) {
   if (featured.length === 0 && bestSeller.length === 0) {
     return <EmptyState title="Menu belum tersedia" subtitle="Admin bisa menambahkan menu manual dari dashboard." />;
   }
   return (
     <div className="pb-5">
       <GuestOrderNote onScan={onScan} table={table} />
+      <AnnouncementRail items={announcements} />
       <div className="section-heading">
         <h2>MENU TERATAS</h2>
         <button onClick={onSeeMenu}>LIHAT SEMUA</button>
@@ -775,6 +849,25 @@ function HomeTab({ featured, bestSeller, addToCart, onSeeMenu, onScan, table }: 
         <span />
       </div>
       <ProductRail items={bestSeller} addToCart={addToCart} />
+    </div>
+  );
+}
+
+function AnnouncementRail({ items }: { items: Announcement[] }) {
+  if (!items.length) return null;
+  return (
+    <div className="announcement-rail mb-3">
+      {items.slice(0, 4).map((item) => (
+        <article className={`customer-announcement-card ${item.type === 'ads' ? 'is-ads' : ''}`} key={item.id}>
+          {item.image_url && <img src={item.image_url} alt={item.title} />}
+          <div>
+            <span>{item.type === 'ads' ? 'PROMO WARUNG' : 'INFO WARUNG'}</span>
+            <strong>{item.title}</strong>
+            <p>{item.body}</p>
+            {item.cta_url && <a href={item.cta_url} className="announcement-link">{item.cta_label || 'Buka'}</a>}
+          </div>
+        </article>
+      ))}
     </div>
   );
 }

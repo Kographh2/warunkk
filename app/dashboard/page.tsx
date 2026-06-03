@@ -24,6 +24,8 @@ function DashboardHome({ profile }: { profile: Profile }) {
   const [orders, setOrders] = useState<OrderWithItems[]>([]);
   const [menuCount, setMenuCount] = useState(0);
   const [tableCount, setTableCount] = useState(0);
+  const [pendingEmailCount, setPendingEmailCount] = useState(0);
+  const [activeAnnouncementCount, setActiveAnnouncementCount] = useState(0);
 
   async function load() {
     const [ordersRes, menuRes, tableRes] = await Promise.all([
@@ -34,6 +36,15 @@ function DashboardHome({ profile }: { profile: Profile }) {
     setOrders((ordersRes.data || []) as OrderWithItems[]);
     setMenuCount(menuRes.count || 0);
     setTableCount(tableRes.count || 0);
+
+    if (profile.role === 'owner') {
+      const [emailReqRes, announceRes] = await Promise.all([
+        supabase.from('email_change_requests').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+        supabase.from('announcements').select('id', { count: 'exact', head: true }).eq('is_active', true)
+      ]);
+      setPendingEmailCount(emailReqRes.count || 0);
+      setActiveAnnouncementCount(announceRes.count || 0);
+    }
   }
 
   useEffect(() => {
@@ -43,6 +54,8 @@ function DashboardHome({ profile }: { profile: Profile }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, load)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' }, load)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tables' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'email_change_requests' }, load)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'announcements' }, load)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
@@ -75,6 +88,21 @@ function DashboardHome({ profile }: { profile: Profile }) {
           <Link href="/kasir" className="btn btn-outline-primary rounded-pill px-3"><i className="bi bi-qr-code-scan me-1" />Scan Kasir</Link>
         </div>
       </div>
+
+      {profile.role === 'owner' && (
+        <div className="owner-action-strip mb-4">
+          <Link href="/dashboard/users#email-approval" className="owner-action-card">
+            <i className="bi bi-envelope-check" />
+            <span>Approve Email</span>
+            <strong>{pendingEmailCount} pending</strong>
+          </Link>
+          <Link href="/dashboard/broadcasts" className="owner-action-card">
+            <i className="bi bi-megaphone" />
+            <span>Broadcast & Ads</span>
+            <strong>{activeAnnouncementCount} aktif</strong>
+          </Link>
+        </div>
+      )}
 
       <div className="row g-3 mb-4">
         <Metric title="Omzet Hari Ini" value={rupiah(todayTotal)} icon="bi-cash-stack" hint={`${todayPaid.length} transaksi paid`} />

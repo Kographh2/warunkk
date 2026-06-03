@@ -263,7 +263,7 @@ begin
   end if;
 
   update public.profiles
-  set full_name = nullif(trim(new_full_name), '')
+  set full_name = coalesce(nullif(trim(new_full_name), ''), 'USER')
   where id = auth.uid();
 end;
 $$;
@@ -343,3 +343,99 @@ $$;
 grant execute on function public.update_my_customer_profile(text) to authenticated;
 grant execute on function public.request_my_email_change(text) to authenticated;
 grant execute on function public.customer_leaderboard(int) to anon, authenticated;
+
+
+-- Broadcast & Ads + manual image upload + realtime notification center
+create table if not exists public.announcements (
+  id uuid primary key default uuid_generate_v4(),
+  type text not null default 'broadcast' check (type in ('broadcast','ads')),
+  title text not null,
+  body text not null,
+  image_url text,
+  cta_label text,
+  cta_url text,
+  is_active boolean not null default true,
+  publish_at timestamptz not null default now(),
+  expires_at timestamptz,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.push_subscriptions (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid references auth.users(id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text,
+  auth text,
+  user_agent text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.announcements enable row level security;
+alter table public.push_subscriptions enable row level security;
+
+drop trigger if exists announcements_updated_at on public.announcements;
+create trigger announcements_updated_at before update on public.announcements for each row execute function public.set_updated_at();
+
+drop trigger if exists push_subscriptions_updated_at on public.push_subscriptions;
+create trigger push_subscriptions_updated_at before update on public.push_subscriptions for each row execute function public.set_updated_at();
+
+create index if not exists idx_announcements_active on public.announcements(is_active, publish_at desc);
+create index if not exists idx_push_subscriptions_endpoint on public.push_subscriptions(endpoint);
+
+-- Public hanya membaca pengumuman aktif; owner mengelola semua.
+drop policy if exists "Public read active announcements" on public.announcements;
+create policy "Public read active announcements" on public.announcements
+for select using (
+  is_active = true
+  and publish_at <= now()
+  and (expires_at is null or expires_at > now())
+);
+
+drop policy if exists "Owner manage announcements" on public.announcements;
+create policy "Owner manage announcements" on public.announcements
+for all using (public.is_owner()) with check (public.is_owner());
+
+-- Subscription bisa dibuat dari browser untuk persiapan true background push.
+drop policy if exists "Anyone create push subscription" on public.push_subscriptions;
+create policy "Anyone create push subscription" on public.push_subscriptions
+for insert with check (true);
+
+drop policy if exists "Owner read push subscription" on public.push_subscriptions;
+create policy "Owner read push subscription" on public.push_subscriptions
+for select using (public.is_owner() or auth.uid() = user_id);
+
+drop policy if exists "Owner manage push subscription" on public.push_subscriptions;
+create policy "Owner manage push subscription" on public.push_subscriptions
+for update using (public.is_owner() or auth.uid() = user_id) with check (public.is_owner() or auth.uid() = user_id);
+
+-- Storage bucket publik untuk gambar broadcast/ads. Jalankan di SQL Editor Supabase.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('broadcast-assets', 'broadcast-assets', true, 5242880, array['image/jpeg','image/png','image/webp','image/gif'])
+on conflict (id) do update set public = true, file_size_limit = 5242880, allowed_mime_types = array['image/jpeg','image/png','image/webp','image/gif'];
+
+drop policy if exists "Public read broadcast assets" on storage.objects;
+create policy "Public read broadcast assets" on storage.objects
+for select using (bucket_id = 'broadcast-assets');
+
+drop policy if exists "Owner upload broadcast assets" on storage.objects;
+create policy "Owner upload broadcast assets" on storage.objects
+for insert with check (bucket_id = 'broadcast-assets' and public.is_owner());
+
+drop policy if exists "Owner update broadcast assets" on storage.objects;
+create policy "Owner update broadcast assets" on storage.objects
+for update using (bucket_id = 'broadcast-assets' and public.is_owner()) with check (bucket_id = 'broadcast-assets' and public.is_owner());
+
+drop policy if exists "Owner delete broadcast assets" on storage.objects;
+create policy "Owner delete broadcast assets" on storage.objects
+for delete using (bucket_id = 'broadcast-assets' and public.is_owner());
+
+do $$
+begin
+  begin alter publication supabase_realtime add table public.announcements; exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.push_subscriptions; exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.email_change_requests; exception when duplicate_object then null; end;
+end $$;

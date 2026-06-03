@@ -94,3 +94,45 @@ export type StoreSettings = {
   taxPercent: number;
   servicePercent: number;
 };
+
+
+export type EmailChangeRequest = {
+  id: string;
+  user_id: string;
+  current_email: string | null;
+  requested_email: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  profiles?: Pick<Profile, 'full_name' | 'role'> | null;
+};
+
+export type AnnouncementType = 'broadcast' | 'ads';
+export type Announcement = {
+  id: string;
+  type: AnnouncementType;
+  title: string;
+  body: string;
+  image_url: string | null;
+  cta_label: string | null;
+  cta_url: string | null;
+  is_active: boolean;
+  publish_at: string;
+  expires_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PushSubscriptionRow = {
+  id: string;
+  user_id: string | null;
+  endpoint: string;
+  p256dh: string | null;
+  auth: string | null;
+  user_agent: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};

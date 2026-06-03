@@ -11,7 +11,8 @@ const links: { href: string; label: string; icon: string; roles: Role[] }[] = [
   { href: '/kasir', label: 'Kasir Scan', icon: 'bi-qr-code-scan', roles: ['owner', 'admin', 'kasir'] },
   { href: '/dashboard/menu', label: 'Menu Manual', icon: 'bi-journal-plus', roles: ['owner', 'admin'] },
   { href: '/dashboard/tables', label: 'QR Meja', icon: 'bi-grid-3x3-gap', roles: ['owner', 'admin'] },
-  { href: '/dashboard/users', label: 'User & Role', icon: 'bi-people', roles: ['owner'] },
+  { href: '/dashboard/broadcasts', label: 'Broadcast & Ads', icon: 'bi-megaphone', roles: ['owner'] },
+  { href: '/dashboard/users', label: 'User & Approval', icon: 'bi-people', roles: ['owner'] },
   { href: '/dashboard/reports', label: 'Laporan Owner', icon: 'bi-graph-up-arrow', roles: ['owner'] }
 ];
 
